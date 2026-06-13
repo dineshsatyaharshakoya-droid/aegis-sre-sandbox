@@ -1,0 +1,32 @@
+# On-prem / single-node profile.
+# Zero external infra: SQLite + in-process queue + in-memory cache + local Ollama.
+# The API process also runs the consumer, so there is one container to operate.
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+
+  aegis:
+    build: ..
+    command: python main.py --api
+    environment:
+      AEGIS_PROFILE: onprem
+      AEGIS_SQLITE_PATH: /data/aegis_events.db
+      OLLAMA_BASE_URL: http://ollama:11434
+      HERMES_MODEL: ollama/llama3
+      NEMOTRON_MODEL: ollama/llama3
+      VCS_PROVIDER: local
+      SANDBOX_PROVIDER: local
+    ports:
+      - "8000:8000"
+    volumes:
+      - aegis_data:/data
+    depends_on:
+      - ollama
+
+volumes:
+  ollama_models:
+  aegis_data:

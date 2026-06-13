@@ -1,0 +1,46 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  /* Vercel / Linear inspired color palette */
+  --bg-main: #000000;
+  --bg-sidebar: #0a0a0a;
+  --bg-card: #111111;
+  --bg-card-hover: #1a1a1a;
+  
+  --border-subtle: #222222;
+  --border-strong: #333333;
+  
+  --text-primary: #ededed;
+  --text-secondary: #888888;
+  
+  /* Semantic Colors - Muted & Premium */
+  --color-success: #17c964;
+  --color-success-bg: rgba(23, 201, 100, 0.1);
+  --color-warning: #f5a623;
+  --color-warning-bg: rgba(245, 166, 35, 0.1);
+  --color-error: #f31260;
+  --color-error-bg: rgba(243, 18, 96, 0.1);
+  --color-info: #006fee;
+  --color-info-bg: rgba(0, 111, 238, 0.1);
+  --color-purple: #9353d3;
+  --color-purple-bg: rgba(147, 83, 211, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  background-color: var(--bg-main);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.5;
+  overflow: hidden;
+  width: 100%;
+  height: 100vh;
+}
+

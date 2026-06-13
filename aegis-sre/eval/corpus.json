@@ -1,0 +1,62 @@
+[
+  {
+    "id": "bug-001",
+    "description": "FastAPI worker timeouts under load: an async endpoint runs a synchronous, blocking DB query that starves the event loop.",
+    "log_snippet": "2026-06-11T02:14:33.812Z WARNING uvicorn.error - Worker (pid:142) was sent SIGKILL! Perhaps out of memory?\n2026-06-11T02:14:33.901Z CRITICAL gunicorn.error - WORKER TIMEOUT (pid:142)\n2026-06-11T02:14:34.002Z ERROR asyncio - Task was destroyed but it is pending!\ntask: <Task pending name='Task-7741' coro=<RequestResponseCycle.run_asgi() running at uvicorn/protocols/http/h11_impl.py:407>>\n2026-06-11T02:14:34.118Z WARNING app.api - request_id=9f3a stalled 31200ms endpoint=/orders/summary\nTraceback (most recent call last):\n  File \"app/api/orders.py\", line 47, in order_summary\n    rows = db.execute(text(QUERY)).fetchall()\n  File \"sqlalchemy/engine/base.py\", line 1412, in execute\n    return meth(self, ...)\npsycopg2.OperationalError: server closed the connection unexpectedly",
+    "ground_truth_diff": "diff --git a/app/api/orders.py b/app/api/orders.py\nindex 3b1f0a2..9c4e7d1 100644\n--- a/app/api/orders.py\n+++ b/app/api/orders.py\n@@ -44,6 +44,6 @@ router = APIRouter()\n @router.get(\"/orders/summary\")\n async def order_summary():\n-    rows = db.execute(text(QUERY)).fetchall()\n+    rows = await asyncio.to_thread(lambda: db.execute(text(QUERY)).fetchall())\n     return {\"rows\": [dict(r) for r in rows]}"
+  },
+  {
+    "id": "bug-002",
+    "description": "Memory/socket leak and eventual OOM: a new aiohttp ClientSession is created per request and never closed.",
+    "log_snippet": "2026-05-29T18:02:11Z WARNING asyncio - Unclosed client session\nclient_session: <aiohttp.client.ClientSession object at 0x7f9c1c0b5a90>\n2026-05-29T18:02:11Z WARNING asyncio - Unclosed connector\nconnections: ['[(<aiohttp.client_proto.ResponseHandler object>, 16920.51)]']\n2026-05-29T18:41:55Z ERROR app.worker - RSS=1987MB open_fds=4096 (soft limit 4096)\n2026-05-29T18:41:56Z ERROR app.worker - OSError: [Errno 24] Too many open files\n2026-05-29T18:42:30Z kernel: Out of memory: Killed process 211 (uvicorn) total-vm:2451920kB anon-rss:2010112kB",
+    "ground_truth_diff": "diff --git a/app/clients/pricing.py b/app/clients/pricing.py\nindex a1c2d3e..b4f5061 100644\n--- a/app/clients/pricing.py\n+++ b/app/clients/pricing.py\n@@ -8,8 +8,8 @@ async def fetch_price(symbol: str) -> float:\n-    session = aiohttp.ClientSession()\n-    resp = await session.get(f\"{BASE}/price/{symbol}\")\n-    data = await resp.json()\n-    return data[\"price\"]\n+    async with aiohttp.ClientSession() as session:\n+        async with session.get(f\"{BASE}/price/{symbol}\") as resp:\n+            data = await resp.json()\n+    return data[\"price\"]"
+  },
+  {
+    "id": "bug-003",
+    "description": "CUDA OOM mid-epoch: the training loss is accumulated as a tensor, retaining the autograd graph and activations across steps.",
+    "log_snippet": "Epoch 3:  61%|######    | 612/1000 [04:12<02:40,  2.42it/s]\nTraceback (most recent call last):\n  File \"train.py\", line 88, in <module>\n    train_one_epoch(model, loader, opt)\n  File \"train.py\", line 64, in train_one_epoch\n    epoch_loss += loss\ntorch.cuda.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.10 GiB (GPU 0; 23.69 GiB total capacity; 21.40 GiB already allocated; 1.05 GiB free; 22.10 GiB reserved in total by PyTorch). If reserved memory is >> allocated memory try setting max_split_size_mb to avoid fragmentation.",
+    "ground_truth_diff": "diff --git a/train.py b/train.py\nindex 7c9a0b1..d2e3f44 100644\n--- a/train.py\n+++ b/train.py\n@@ -60,7 +60,7 @@ def train_one_epoch(model, loader, opt):\n         loss.backward()\n         opt.step()\n-        epoch_loss += loss\n+        epoch_loss += loss.item()\n     return epoch_loss / len(loader)"
+  },
+  {
+    "id": "bug-004",
+    "description": "Multi-GPU device mismatch: an input tensor is built on the default device (cuda:0) while the model shard lives on cuda:1.",
+    "log_snippet": "[2026-06-02 09:31:44,210] rank=1 ERROR torch.distributed - exception in forward\nTraceback (most recent call last):\n  File \"serve.py\", line 122, in predict\n    out = self.model(features)\n  File \"torch/nn/modules/module.py\", line 1518, in _call_impl\n    return forward_call(*args, **kwargs)\n  File \"model/net.py\", line 75, in forward\n    h = self.proj(x) + bias\nRuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:1 and cuda:0! (when checking argument for argument mat1 in method wrapper_addmm)",
+    "ground_truth_diff": "diff --git a/serve.py b/serve.py\nindex 5560aa1..6671bb2 100644\n--- a/serve.py\n+++ b/serve.py\n@@ -118,7 +118,8 @@ class Predictor:\n     def predict(self, batch):\n-        features = torch.tensor(batch, dtype=torch.float32)\n+        device = next(self.model.parameters()).device\n+        features = torch.tensor(batch, dtype=torch.float32, device=device)\n         out = self.model(features)\n         return out.argmax(-1).cpu().tolist()"
+  },
+  {
+    "id": "bug-005",
+    "description": "C extension segfault in the ETL pipeline: a row with a NULL name field is passed to strlen without a null check (core dumped).",
+    "log_snippet": "[etl-worker-7] processing shard 0003 rows=120000\nSegmentation fault (core dumped)\n[18402.114553] etl_worker[20413]: segfault at 0 ip 00007f3a2c11b4e1 sp 00007ffe9b3c2a10 error 4 in libetl.so[7f3a2c100000+22000]\nProgram terminated with signal SIGSEGV, Segmentation fault.\n#0  0x00007f3a2c11b4e1 in normalize_row (row=0x55c0a1d4e2a0) at src/transform.c:142\n142         size_t n = strlen(row->name);\n(gdb) bt\n#0  normalize_row (row=0x55c0a1d4e2a0) at src/transform.c:142\n#1  0x00007f3a2c11a9c2 in process_shard (shard=0x55c0a1c00010) at src/pipeline.c:88",
+    "ground_truth_diff": "diff --git a/src/transform.c b/src/transform.c\nindex 11aa22b..33cc44d 100644\n--- a/src/transform.c\n+++ b/src/transform.c\n@@ -138,6 +138,10 @@ int normalize_row(Row *row) {\n+    if (row->name == NULL) {\n+        row->name_len = 0;\n+        return ETL_SKIP_ROW;\n+    }\n     size_t n = strlen(row->name);\n     row->name_len = n;"
+  },
+  {
+    "id": "bug-006",
+    "description": "Heap memory corruption in the C aggregation kernel: an off-by-one loop bound writes one element past a malloc'd buffer (AddressSanitizer heap-buffer-overflow).",
+    "log_snippet": "==20917==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x6020000000d4 at pc 0x0000004f1a31 bp 0x7ffd1c sp 0x7ffd14\nWRITE of size 4 at 0x6020000000d4 thread T0\n    #0 0x4f1a30 in accumulate src/aggregate.c:57\n    #1 0x4f2b11 in run_window src/aggregate.c:91\n    #2 0x4f3c02 in main src/main.c:40\n0x6020000000d4 is located 0 bytes to the right of 20-byte region [0x6020000000c0,0x6020000000d4)\nallocated by thread T0 here:\n    #0 0x7f in malloc (libasan.so+0xb1)\n    #1 0x4f2a55 in run_window src/aggregate.c:84\nSUMMARY: AddressSanitizer: heap-buffer-overflow src/aggregate.c:57 in accumulate",
+    "ground_truth_diff": "diff --git a/src/aggregate.c b/src/aggregate.c\nindex 88dd99a..99ee00b 100644\n--- a/src/aggregate.c\n+++ b/src/aggregate.c\n@@ -54,7 +54,7 @@ void accumulate(int *out, const int *in, size_t n) {\n-    for (size_t i = 0; i <= n; i++) {\n+    for (size_t i = 0; i < n; i++) {\n         out[i] += in[i];\n     }\n }"
+  },
+  {
+    "id": "bug-007",
+    "description": "Kubernetes CrashLoopBackOff: the liveness probe targets port 8080 but the app serves on 8000, so kubelet keeps killing a healthy container.",
+    "log_snippet": "$ kubectl describe pod inference-api-6d8f9c7b4-q2tld\nEvents:\n  Type     Reason     Age                From     Message\n  ----     ------     ----               ----     -------\n  Warning  Unhealthy  2m (x7 over 4m)    kubelet  Liveness probe failed: Get \"http://10.1.4.22:8080/healthz\": dial tcp 10.1.4.22:8080: connect: connection refused\n  Normal   Killing    2m (x3 over 4m)    kubelet  Container inference-api failed liveness probe, will be restarted\n  Warning  BackOff    30s (x9 over 4m)   kubelet  Back-off restarting failed container\n    Last State:     Terminated\n      Reason:       Error\n      Exit Code:    137",
+    "ground_truth_diff": "diff --git a/k8s/deployment.yaml b/k8s/deployment.yaml\nindex 2a2b2c2..3d3e3f3 100644\n--- a/k8s/deployment.yaml\n+++ b/k8s/deployment.yaml\n@@ -32,7 +32,7 @@ spec:\n           livenessProbe:\n             httpGet:\n               path: /healthz\n-              port: 8080\n+              port: 8000\n             initialDelaySeconds: 10\n             periodSeconds: 5"
+  },
+  {
+    "id": "bug-008",
+    "description": "Kubernetes pod repeatedly OOMKilled (exit code 137): the memory limit is 256Mi but the service's working set is ~700Mi.",
+    "log_snippet": "$ kubectl describe pod feature-builder-0\n    State:          Waiting\n      Reason:       CrashLoopBackOff\n    Last State:     Terminated\n      Reason:       OOMKilled\n      Exit Code:    137\nEvents:\n  Warning  OOMKilling  kubelet  Memory cgroup out of memory: Killed process 1 (python) total-rss 268MB limit 256MB\n  Warning  BackOff     kubelet  Back-off restarting failed container\n[ 9123.557812] Memory cgroup out of memory: Killed process 30122 (python) total-vm:1934220kB anon-rss:274432kB",
+    "ground_truth_diff": "diff --git a/k8s/feature-builder.yaml b/k8s/feature-builder.yaml\nindex 4b4c4d4..5e5f5a5 100644\n--- a/k8s/feature-builder.yaml\n+++ b/k8s/feature-builder.yaml\n@@ -40,9 +40,9 @@ spec:\n             resources:\n               requests:\n-                memory: \"256Mi\"\n+                memory: \"768Mi\"\n               limits:\n-                memory: \"256Mi\"\n+                memory: \"1Gi\" "
+  },
+  {
+    "id": "bug-009",
+    "description": "Postgres connection pool exhaustion: SQLAlchemy sessions are opened per request but never closed, exhausting the QueuePool under load.",
+    "log_snippet": "2026-06-08T13:22:07Z ERROR app.db - connection checkout failed pool_size=5 overflow=10\nTraceback (most recent call last):\n  File \"app/db.py\", line 51, in get_user\n    return session.query(User).get(uid)\n  File \"sqlalchemy/pool/base.py\", line 1248, in _do_get\n    raise exc.TimeoutError(...)\nsqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 10 reached, connection timed out, timeout 30.00 (Background on this error at: https://sqlalche.me/e/20/3o7r)\n2026-06-08T13:22:08Z ERROR app.db - psycopg2.OperationalError: FATAL: sorry, too many clients already",
+    "ground_truth_diff": "diff --git a/app/db.py b/app/db.py\nindex 6f6a6b6..7a7b7c7 100644\n--- a/app/db.py\n+++ b/app/db.py\n@@ -47,8 +47,9 @@ def get_user(uid: int):\n-    session = SessionLocal()\n-    return session.query(User).get(uid)\n+    with SessionLocal() as session:\n+        return session.query(User).get(uid)"
+  },
+  {
+    "id": "bug-010",
+    "description": "Redis 'max number of clients reached': a new Redis client (and TCP connection) is created on every call instead of sharing a pooled client.",
+    "log_snippet": "2026-06-09T07:45:19Z ERROR cache - redis op failed key=session:8831\nTraceback (most recent call last):\n  File \"app/cache.py\", line 22, in get_session\n    return redis.Redis(host=HOST, port=6379).get(key)\n  File \"redis/client.py\", line 1173, in execute_command\n    conn = self.connection_pool.get_connection(command_name)\nredis.exceptions.ConnectionError: max number of clients reached\n2026-06-09T07:45:19Z ERROR cache - ConnectionError: Error 99 connecting to redis:6379. Cannot assign requested address.",
+    "ground_truth_diff": "diff --git a/app/cache.py b/app/cache.py\nindex 8c8d8e8..9f9a9b9 100644\n--- a/app/cache.py\n+++ b/app/cache.py\n@@ -1,6 +1,8 @@\n import redis\n\n HOST = \"redis\"\n+# Share one connection pool process-wide instead of opening a client per call.\n+_pool = redis.ConnectionPool(host=HOST, port=6379, max_connections=50)\n@@ -19,4 +21,4 @@ def get_session(key: str):\n-    return redis.Redis(host=HOST, port=6379).get(key)\n+    return redis.Redis(connection_pool=_pool).get(key)"
+  }
+]

@@ -1,0 +1,70 @@
+/* RESPONSIVE MEDIA QUERIES */
+
+/* Overlay for mobile sidebar */
+.sidebar-overlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(4px);
+  z-index: 15;
+}
+
+@media (max-width: 1024px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+    overflow-y: auto;
+  }
+  
+  .dashboard-pane {
+    overflow-y: visible; /* Let parent scroll */
+    border-right: none;
+    border-bottom: 1px solid #222;
+  }
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    transform: translateX(-100%);
+  }
+
+  .sidebar.mobile-open {
+    transform: translateX(0);
+    box-shadow: 10px 0 30px rgba(0,0,0,0.8);
+  }
+
+  .sidebar-overlay.mobile-open {
+    display: block;
+  }
+
+  .mobile-menu-btn {
+    display: flex;
+    margin-right: 8px;
+  }
+
+  .functional-nav {
+    padding: 0 16px;
+  }
+  
+  .nav-left {
+    gap: 12px;
+  }
+
+  .action-bar {
+    flex-direction: column;
+  }
+
+  .btn-dense {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .user-profile span {
+    display: none; /* Hide 'On-Call SRE' text on mobile */
+  }
+}

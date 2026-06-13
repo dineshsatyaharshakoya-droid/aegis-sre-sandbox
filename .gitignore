@@ -1,0 +1,25 @@
+# Secrets / local env — never commit
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Local state / data
+*.db
+.chroma_db/
+
+# OS
+.DS_Store

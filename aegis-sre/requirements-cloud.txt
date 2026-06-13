@@ -1,0 +1,5 @@
+# Extra dependencies for the cloud (scaled) profile only.
+# On-prem needs none of these — its backends are stdlib (sqlite3) + in-memory.
+redis>=5.0          # RedisCache (atomic SET NX EX) + RedisStreamBroker
+asyncpg>=0.29       # PostgresEventStore connection pool
+prometheus-client>=0.20  # /metrics endpoint (optional; no-op if absent, on either tier)
