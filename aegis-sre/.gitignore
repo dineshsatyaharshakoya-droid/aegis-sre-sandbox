@@ -14,5 +14,8 @@ venv/
 *.db
 .chroma_db/
 
+# Generated eval reports (corpus is tracked; reports are run artifacts)
+eval/report.json
+
 # OS
 .DS_Store

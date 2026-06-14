@@ -96,9 +96,49 @@ async def run_case(case: dict, sem: asyncio.Semaphore) -> dict:
             }
 
 
+REQUIRED_FIELDS = ("id", "description", "log_snippet", "ground_truth_diff")
+
+
+def validate_corpus(cases: list) -> None:
+    """Raise ValueError if the corpus is malformed. Guards against silent drift:
+    every case needs the required fields, ids must be unique, and each
+    ground-truth fix must look like a unified git diff."""
+    if not isinstance(cases, list) or not cases:
+        raise ValueError("corpus must be a non-empty JSON array")
+    seen: set[str] = set()
+    for i, c in enumerate(cases):
+        missing = [f for f in REQUIRED_FIELDS if not c.get(f)]
+        if missing:
+            raise ValueError(f"case #{i} ({c.get('id', '?')}) missing/empty fields: {missing}")
+        cid = c["id"]
+        if cid in seen:
+            raise ValueError(f"duplicate case id: {cid!r}")
+        seen.add(cid)
+        diff = c["ground_truth_diff"]
+        if "diff --git" not in diff or "@@" not in diff:
+            raise ValueError(f"case {cid}: ground_truth_diff is not a unified git diff")
+
+
+def load_corpus(path: str) -> list:
+    cases = json.loads(Path(path).read_text())
+    validate_corpus(cases)
+    return cases
+
+
+def aggregate(results: list, threshold: float) -> dict:
+    """Reduce per-case results to a mean fix-rate, verdict counts, and pass/fail.
+    Pure (no I/O) so the CI-gate math is unit-testable without an LLM."""
+    n = len(results) or 1
+    mean = sum(r["score"] for r in results) / n
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+    return {"mean": mean, "counts": counts, "passed": mean >= threshold, "n": len(results)}
+
+
 async def main_async(args: argparse.Namespace) -> int:
     s = get_settings()
-    cases = json.loads(Path(args.corpus).read_text())
+    cases = load_corpus(args.corpus)
     if args.limit:
         cases = cases[: args.limit]
 
@@ -107,11 +147,8 @@ async def main_async(args: argparse.Namespace) -> int:
     results = await asyncio.gather(*(run_case(c, sem) for c in cases))
     results.sort(key=lambda r: r["id"])
 
-    n = len(results) or 1
-    mean = sum(r["score"] for r in results) / n
-    counts: dict[str, int] = {}
-    for r in results:
-        counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
+    agg = aggregate(results, args.threshold)
+    mean, counts = agg["mean"], agg["counts"]
 
     print("\n" + "-" * 78)
     print(f"{'id':<10}{'verdict':<12}{'score':>7}{'root_cause':>13}{'sec':>8}")
@@ -125,7 +162,7 @@ async def main_async(args: argparse.Namespace) -> int:
     summary = "  ".join(f"{k}={v}" for k, v in sorted(counts.items()))
     print(f"cases={len(results)}  mean_fix_rate={mean:.3f}  [{summary}]")
 
-    passed = mean >= args.threshold
+    passed = agg["passed"]
     print(f"THRESHOLD {args.threshold:.2f}  ->  {'PASS' if passed else 'FAIL'}")
 
     if args.report:
