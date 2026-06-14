@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import asyncio
 from typing import TypedDict
 from langgraph.graph import StateGraph, END
 from pydantic import ValidationError
@@ -23,8 +24,23 @@ _rag_engine_instance = None
 def get_rag_engine() -> RAGEngine:
     global _rag_engine_instance
     if _rag_engine_instance is None:
-        _rag_engine_instance = RAGEngine(workspace_path=".")
+        _rag_engine_instance = RAGEngine(workspace_path=os.environ.get("AEGIS_RAG_WORKSPACE", "."))
     return _rag_engine_instance
+
+
+async def warm_rag_engine() -> None:
+    """Ingest the workspace + default SRE skills into RAG once at startup (A6),
+    so researcher_node's query_codebase/query_skills return real context instead
+    of "" (they did nothing in the API/worker path before). Guarded and run in a
+    thread, so a slow or unavailable index can never block or break the pipeline."""
+    try:
+        from aegis_sre.orchestrator.rag_engine import DEFAULT_SRE_SKILLS
+        rag = get_rag_engine()
+        await asyncio.to_thread(rag.ingest_workspace)
+        await asyncio.to_thread(rag.ingest_skills, DEFAULT_SRE_SKILLS)
+        logger.info("rag_warm_complete")
+    except Exception as e:  # noqa: BLE001 - RAG is enrichment; never break startup
+        logger.warning("rag_warm_failed", error=str(e))
 
 class GraphState(TypedDict):
     telemetry: TelemetryEvent

@@ -27,17 +27,22 @@ from aegis_sre.orchestrator.safety import safety_policy
 from aegis_sre.telemetry.logger import logger
 
 
-def make_processor(checkpointer):
+def make_processor(checkpointer, pubsub=None):
     """
     Build the async processor that runs the LangGraph orchestrator for one event.
     Imports are lazy so the infra layer can be tested without heavy deps.
 
     The graph (and its `checkpointer`) is built once and reused for every
     incident, instead of opening/closing a fresh SQLite connection per event.
+
+    Node-by-node progress is published to `pubsub` so the API replicas can fan it
+    out to WebSocket clients (audit #18 — was previously discarded with `pass`).
     """
     from aegis_sre.orchestrator.graph import build_graph
+    from aegis_sre.infra.pubsub import NoOpPubSub
 
     graph_app = build_graph(checkpointer=checkpointer)
+    pubsub = pubsub or NoOpPubSub()
 
     async def processor(event: TelemetryEvent) -> None:
         initial_state = {
@@ -50,8 +55,24 @@ def make_processor(checkpointer):
             "resolved": False,
         }
         config = {"configurable": {"thread_id": event.event_id}}
-        async for _output in graph_app.astream(initial_state, config=config):
-            pass  # In cloud, stream node updates to Redis pub/sub for WS fan-out.
+        await pubsub.publish({"incident_id": event.event_id, "type": "telemetry_received",
+                              "service": event.service_name})
+        final_state = dict(initial_state)
+        async for output in graph_app.astream(initial_state, config=config):
+            for node_name, state_update in output.items():
+                final_state.update(state_update)
+                await pubsub.publish({"incident_id": event.event_id, "type": "node_update",
+                                      "node": node_name})
+        patch = final_state.get("current_patch")
+        if patch is not None:
+            await pubsub.publish({
+                "incident_id": event.event_id, "type": "patch_ready",
+                "service": event.service_name,
+                "file": getattr(patch, "file_path", None),
+                "root_cause_analysis": patch.root_cause_analysis,
+                "explanation": patch.explanation,
+                "diff": getattr(patch, "replacement_content", None),
+            })
         logger.info("incident_processed", event_id=event.event_id)
 
     return processor
@@ -65,12 +86,20 @@ async def main() -> None:
     broker = build_broker(settings)
     await store.init()
 
+    # Warm the RAG index once at worker startup (A6), in the background.
+    from aegis_sre.orchestrator.graph import warm_rag_engine
+    asyncio.create_task(warm_rag_engine())
+
+    # WS fan-out: publish graph progress so API replicas can stream it (A10/#18).
+    from aegis_sre.infra.pubsub import build_pubsub
+    pubsub = build_pubsub(settings)
+
     # Open the LangGraph checkpointer once for the worker's lifetime and reuse it
     # across every incident (absolute path via settings, not a cwd-relative one).
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
     async with AsyncSqliteSaver.from_conn_string(settings.state_db_path) as checkpointer:
-        processor = make_processor(checkpointer)
+        processor = make_processor(checkpointer, pubsub=pubsub)
 
         runners = [
             ConsumerRunner(

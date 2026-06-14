@@ -53,6 +53,8 @@ _consumer_runner: ConsumerRunner | None = None
 # every incident, instead of opening/closing a fresh SQLite connection per event.
 _checkpointer = None
 _checkpointer_cm = None
+_ws_pubsub = None
+_ws_fanout_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
@@ -65,7 +67,7 @@ async def lifespan(app: FastAPI):
     so connections and the WAL are released cleanly instead of being leaked.
     """
     global incident_service, _consumer_task, _consumer_runner
-    global _checkpointer, _checkpointer_cm
+    global _checkpointer, _checkpointer_cm, _ws_pubsub, _ws_fanout_task
 
     # Fail closed in production: a cloud (internet-exposed) deployment MUST set a
     # webhook token, otherwise anyone can trigger the LLM repair swarm.
@@ -97,6 +99,14 @@ async def lifespan(app: FastAPI):
     # Re-publish events left 'pending' by a prior crash so they survive restarts.
     await incident_service.recover_pending()
 
+    # Warm the RAG index in the background so the researcher has real code/skill
+    # context (A6). Non-blocking: readiness doesn't wait on embedding.
+    try:
+        from aegis_sre.orchestrator.graph import warm_rag_engine
+        asyncio.create_task(warm_rag_engine())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("rag_warm_dispatch_failed", error=str(e))
+
     # On-prem (in-process broker) runs the consumer inside the API process.
     # Cloud (Redis broker) relies on separate `worker.py` replicas, so we skip it.
     if isinstance(broker, InProcessBroker):
@@ -111,6 +121,23 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("external_workers_expected", profile=settings.profile)
 
+    # WS fan-out (A10/#18): on the cloud tier, subscribe to worker progress on
+    # Redis pub/sub and rebroadcast to this replica's WS clients. No-op on-prem
+    # (the in-process consumer already broadcasts directly).
+    from aegis_sre.infra.pubsub import build_pubsub
+    _ws_pubsub = build_pubsub(settings)
+
+    async def _fanout():
+        try:
+            async for message in _ws_pubsub.listen():
+                await manager.broadcast(message)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ws_fanout_failed", error=str(e))
+
+    _ws_fanout_task = asyncio.create_task(_fanout())
+
     try:
         yield
     finally:
@@ -122,6 +149,17 @@ async def lifespan(app: FastAPI):
             try:
                 await _consumer_task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        if _ws_fanout_task is not None:
+            _ws_fanout_task.cancel()
+            try:
+                await _ws_fanout_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        if _ws_pubsub is not None:
+            try:
+                await _ws_pubsub.close()
+            except Exception:  # noqa: BLE001
                 pass
         if _checkpointer_cm is not None:
             try:

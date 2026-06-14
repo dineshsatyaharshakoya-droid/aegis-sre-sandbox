@@ -210,3 +210,25 @@ class RAGEngine:
         except Exception as e:
             logger.error("rag_skills_query_failed", query=search_term, error=str(e))
             return ""
+
+
+# Default SRE skills ingested into the Skill-RAG on startup (A6). Each entry is a
+# {issue_type, resolution} post-mortem the researcher can retrieve for context.
+DEFAULT_SRE_SKILLS = [
+    {"issue_type": "CrashLoopBackOff",
+     "resolution": "Pod crash-looping: inspect the last termination reason and recent "
+                   "logs; if OOMKilled raise memory limits, if a bad config rollback the "
+                   "last deploy, if a dependency is down add a readiness gate."},
+    {"issue_type": "OOMKilled",
+     "resolution": "Container OOM: increase memory limit or fix the leak (unclosed "
+                   "sessions/buffers); cap concurrency; add backpressure."},
+    {"issue_type": "HighErrorRate",
+     "resolution": "5xx spike: check a recent deploy first (rollback if correlated); "
+                   "inspect upstream dependency latency; shed load / scale out."},
+    {"issue_type": "NodeNotReady",
+     "resolution": "Node NotReady: cordon and drain the node so the scheduler reschedules "
+                   "pods; investigate kubelet/disk-pressure; uncordon once healthy."},
+    {"issue_type": "NullPointer/NoneType",
+     "resolution": "NoneType/null deref: guard the nullable access and return early or a "
+                   "safe default; add a regression test for the empty/missing input."},
+]
