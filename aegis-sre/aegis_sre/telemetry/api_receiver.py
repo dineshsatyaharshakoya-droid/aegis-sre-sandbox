@@ -479,5 +479,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 else:
                     # not_found / already_approved / error -> tell the approver only.
                     await websocket.send_json({"type": "approval_result", **result})
+
+            elif data.get("action") == "reject_patch":
+                incident_id = data.get("incident_id")
+                if not incident_id:
+                    await websocket.send_json({"type": "error", "message": "reject_patch requires incident_id"})
+                    continue
+                rejected = approval_registry.reject(incident_id)
+                logger.info("human_rejected_patch", incident_id=incident_id, rejected=rejected)
+                if incident_service is not None and rejected:
+                    await incident_service.store.mark_event_status(incident_id, "rejected")
+                await manager.broadcast({"type": "patch_rejected", "incident_id": incident_id})
     except WebSocketDisconnect:
         manager.disconnect(websocket)

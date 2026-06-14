@@ -5,8 +5,8 @@ import { PatchTerminal } from './PatchTerminal';
 interface MainViewProps {
   incident: Incident | null;
   incidentCount: number;
-  onApprove: (file: string | undefined) => void;
-  onReject: () => void;
+  onApprove: (incidentId: string | undefined) => void;
+  onReject: (incidentId: string | undefined) => void;
   toggleSidebar: () => void;
 }
 
@@ -119,15 +119,15 @@ export const MainView = ({ incident, incidentCount, onApprove, onReject, toggleS
               </div>
               <div className="action-buttons">
                 <button 
-                  className="btn-dense reject" 
-                  onClick={onReject}
+                  className="btn-dense reject"
+                  onClick={() => onReject(incident.id)}
                   disabled={incident.status !== 'patch_ready'}
                 >
                   <X size={14} /> Discard
                 </button>
                 <button 
                   className="btn-dense approve" 
-                  onClick={() => onApprove(incident.patch?.file)}
+                  onClick={() => onApprove(incident.id)}
                   disabled={incident.status !== 'patch_ready'}
                 >
                   <Rocket size={14} /> Deploy Fix

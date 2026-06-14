@@ -18,8 +18,8 @@ function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [selectedIncident, setSelectedIncident] = useState<Incident | null>(null);
 
-  const handleApprove = (file: string | undefined) => {
-    approvePatch(file);
+  const handleApprove = (incidentId: string | undefined) => {
+    approvePatch(incidentId);
     setIsSidebarOpen(false); // Close drawer on mobile
   };
 
@@ -43,8 +43,8 @@ function App() {
         incident={selectedIncident}
         incidentCount={Object.keys(incidents).length}
         onApprove={handleApprove}
-        onReject={() => {
-          rejectPatch();
+        onReject={(incidentId) => {
+          rejectPatch(incidentId);
           setSelectedIncident(null);
         }}
         toggleSidebar={() => setIsSidebarOpen(true)}

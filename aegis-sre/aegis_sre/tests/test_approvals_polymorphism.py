@@ -112,3 +112,17 @@ def test_actionplan_approval_is_idempotent():
 def test_unknown_incident_is_not_found():
     res = asyncio.run(ApprovalRegistry().approve("nope", _FakeVCS()))
     assert res["status"] == "not_found"
+
+
+# --- audit #14: reject ---
+
+def test_reject_drops_pending():
+    reg = ApprovalRegistry()
+    reg.register("i8", _plan(), TELE)
+    assert reg.reject("i8") is True
+    assert reg.pending_count() == 0
+    assert reg.reject("i8") is False  # already gone
+
+
+def test_reject_unknown_is_false():
+    assert ApprovalRegistry().reject("nope") is False

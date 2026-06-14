@@ -120,6 +120,15 @@ class ApprovalRegistry:
                 "mode": mode, "resolved": outcome.resolved, "rolled_back": outcome.rolled_back,
                 "reason": outcome.executed.reason, "audit": audit}
 
+    def reject(self, incident_id: str) -> bool:
+        """Drop a pending remediation so it can never be approved/executed.
+        Returns True if something was pending and is now discarded."""
+        entry = self._pending.pop(incident_id, None)
+        if entry is None:
+            return False
+        logger.info("remediation_rejected", incident_id=incident_id)
+        return True
+
     def _trim_approved(self) -> None:
         while len(self._approved) > self.max_size:
             self._approved.popitem(last=False)

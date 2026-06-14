@@ -116,14 +116,18 @@ export const useAegisStream = (url: string) => {
     };
   }, [url]);
 
-  const approvePatch = useCallback((file: string | undefined) => {
-    if (ws.current && ws.current.readyState === WebSocket.OPEN && file) {
-      ws.current.send(JSON.stringify({ action: 'approve_patch', file }));
+  const approvePatch = useCallback((incidentId: string | undefined) => {
+    if (ws.current && ws.current.readyState === WebSocket.OPEN && incidentId) {
+      // Backend expects incident_id (was previously sending `file`, which the
+      // server rejected with "approve_patch requires incident_id").
+      ws.current.send(JSON.stringify({ action: 'approve_patch', incident_id: incidentId }));
     }
   }, []);
 
-  const rejectPatch = useCallback(() => {
-    // In a real system, we'd tell the AI to try again.
+  const rejectPatch = useCallback((incidentId: string | undefined) => {
+    if (ws.current && ws.current.readyState === WebSocket.OPEN && incidentId) {
+      ws.current.send(JSON.stringify({ action: 'reject_patch', incident_id: incidentId }));
+    }
   }, []);
 
   return { incidents, connected, approvePatch, rejectPatch };
