@@ -1,3 +1,4 @@
+from enum import Enum
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any
 
@@ -9,6 +10,56 @@ class TelemetryEvent(BaseModel):
     service_name: str
     crash_log: str = Field(description="The stack trace or error log of the crash.")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional context like memory usage or pod name.")
+
+
+class SignalKind(str, Enum):
+    """The class of incident-triggering input. CRASH is today's only live path;
+    the others are the generalization targets (metric alerts, log anomalies)."""
+    CRASH = "crash"
+    METRIC_ALERT = "metric_alert"
+    LOG_ANOMALY = "log_anomaly"
+    GENERIC = "generic"
+
+
+class Signal(BaseModel):
+    """Stone 1: the generalized incident input (supersedes the crash-only
+    `TelemetryEvent`). A `Signal` is any thing that can trigger remediation —
+    a crash, a metric alert, a log anomaly — normalized to one shape.
+
+    `TelemetryEvent` stays the canonical type the pipeline runs on, so this is
+    purely additive: `from_telemetry` / `to_telemetry` give a lossless bridge so
+    new sources can enter as `Signal`s while the crash path is byte-for-byte
+    unchanged. Later phases (B2-B5) migrate the core onto `Signal` directly.
+    """
+    signal_id: str = Field(description="Stable id; doubles as the dedup/incident key.")
+    service_name: str
+    kind: SignalKind = Field(default=SignalKind.CRASH, description="What kind of signal this is.")
+    body: str = Field(description="The diagnostic text: crash log, alert summary, anomaly detail.")
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def from_telemetry(cls, event: "TelemetryEvent") -> "Signal":
+        """Adapt a legacy crash `TelemetryEvent` into a `Signal` (kind=crash)."""
+        return cls(
+            signal_id=event.event_id,
+            service_name=event.service_name,
+            kind=SignalKind.CRASH,
+            body=event.crash_log,
+            metadata=dict(event.metadata),
+        )
+
+    def to_telemetry(self) -> "TelemetryEvent":
+        """Project a `Signal` back onto the canonical `TelemetryEvent` the graph
+        consumes today. The originating `kind` is preserved in metadata so no
+        information is lost when a non-crash signal flows the crash path."""
+        meta = dict(self.metadata)
+        meta.setdefault("signal_kind", self.kind.value)
+        return TelemetryEvent(
+            event_id=self.signal_id,
+            service_name=self.service_name,
+            crash_log=self.body,
+            metadata=meta,
+        )
 
 class PatchProposal(BaseModel):
     """
