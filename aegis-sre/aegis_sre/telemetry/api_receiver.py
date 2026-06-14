@@ -355,6 +355,36 @@ async def receive_sentry_webhook(request: Request):
         return {"status": "accepted", "source": "sentry"}
     return result
 
+@app.post("/webhook/alert")
+async def receive_alertmanager_webhook(
+    request: Request,
+    x_aegis_token: Optional[str] = Header(default=None, alias="X-Aegis-Token"),
+):
+    """Alertmanager webhook adapter (C4): a live metric alert triggers the swarm.
+
+    Each firing alert is normalized to a Signal(metric_alert), projected onto the
+    canonical TelemetryEvent via the Stone-1 adapter, and run through the same
+    ingest pipeline as crashes. Resolved alerts are ignored.
+    """
+    _enforce(request, x_aegis_token)
+    try:
+        payload = json.loads(await request.body())
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    from aegis_sre.telemetry.alert_adapter import parse_alertmanager
+    signals = parse_alertmanager(payload)
+    if not signals:
+        return {"status": "ignored", "reason": "no_firing_alerts", "source": "alertmanager"}
+
+    results = []
+    for signal in signals:
+        result = await _process_telemetry(signal.to_telemetry())
+        results.append({"signal_id": signal.signal_id, **result})
+    accepted = sum(1 for r in results if r.get("status") == "accepted")
+    return {"status": "accepted", "source": "alertmanager",
+            "firing": len(signals), "accepted": accepted, "results": results}
+
 @app.get("/metrics")
 async def metrics_endpoint():
     """Prometheus scrape endpoint. Empty body when prometheus_client is absent."""
