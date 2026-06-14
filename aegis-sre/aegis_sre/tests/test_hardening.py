@@ -400,8 +400,11 @@ def test_get_sandbox_engine_selection():
     prev_p = os.environ.pop("SANDBOX_PROVIDER", None)
     prev_k = os.environ.pop("E2B_API_KEY", None)
     try:
-        # auto + no key -> local (can actually run; never a fail-open E2B)
-        assert isinstance(get_sandbox_engine(), LocalProcessEngine)
+        # auto + no key -> isolated-by-default (Batch 5/S3): Docker container when
+        # available, else the local host engine; never a fail-open E2B.
+        from aegis_sre.orchestrator.sandbox_engine import ContainerEngine
+        expected = ContainerEngine if ContainerEngine.available() else LocalProcessEngine
+        assert isinstance(get_sandbox_engine(), expected)
         os.environ["SANDBOX_PROVIDER"] = "e2b"
         assert isinstance(get_sandbox_engine(), E2BEngine)
         os.environ["SANDBOX_PROVIDER"] = "local"

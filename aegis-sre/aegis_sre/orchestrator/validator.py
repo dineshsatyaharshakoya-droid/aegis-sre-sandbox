@@ -53,7 +53,14 @@ class Validator:
         repro_command: Optional[str] = None,
     ) -> ValidationResult:
         if isinstance(remediation, CodePatch):
-            engine = self._engine_or_default()
+            from aegis_sre.orchestrator.sandbox_engine import SandboxUnavailableError
+            try:
+                engine = self._engine_or_default()
+            except SandboxUnavailableError as e:
+                # No isolated sandbox + AEGIS_REQUIRE_SANDBOX -> fail closed; never
+                # validate attacker-influenced patch code on the bare host.
+                logger.error("sandbox_unavailable_failing_closed", error=str(e))
+                return ValidationResult(success=False, output=str(e), kind="code_patch")
             success, output = await engine.compile_and_test(
                 remediation, original_source=original_source, repro_command=repro_command
             )
