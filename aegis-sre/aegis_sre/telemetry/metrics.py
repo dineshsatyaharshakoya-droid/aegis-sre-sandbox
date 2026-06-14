@@ -88,6 +88,11 @@ patches_deployed = Counter(
     "aegis_patches_deployed_total",
     "Human-approved patches that opened a PR",
 )
+actions_executed = Counter(
+    "aegis_actions_executed_total",
+    "Remediations by type and outcome",
+    ["type", "result"],  # type: code_patch|action_plan · result: deployed|dry_run|live|rolled_back|blocked|error
+)
 
 # --- Security --------------------------------------------------------------
 auth_rejections = Counter(

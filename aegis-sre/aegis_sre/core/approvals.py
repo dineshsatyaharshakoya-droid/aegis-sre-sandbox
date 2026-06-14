@@ -41,16 +41,18 @@ class ApprovalRegistry:
     def pending_count(self) -> int:
         return len(self._pending)
 
-    async def approve(self, incident_id: str, vcs_provider) -> Dict:
+    async def approve(self, incident_id: str, vcs_provider, runner=None) -> Dict:
         """Approve a remediation. Idempotent and safe against double-approval.
 
         Polymorphic by remediation type:
           * CodePatch  -> open a PR via the VCS provider (status `deployed`).
-          * ActionPlan -> record approval only; gated execution lands in Stone-3,
-            so we do NOT act yet (status `approved_pending_execution`).
+          * ActionPlan -> drive the gated execute->verify->rollback runner (D3).
+            With the default policy this is a dry-run; live needs an environment
+            that permits it plus an armed plan.
 
-        Returns a result dict with `status` in
-        {deployed, approved_pending_execution, already_approved, not_found, error}.
+        Returns a result dict with `status` in {deployed, executed, rolled_back,
+        blocked, already_approved, not_found, error}. Every outcome is audited and
+        counted via aegis_actions_executed_total (D6).
         """
         # Idempotency: an incident already actioned returns the same record.
         if incident_id in self._approved:
@@ -65,34 +67,58 @@ class ApprovalRegistry:
 
         remediation, telemetry = entry
 
-        # ActionPlan: gated execution is not built yet (Stone-3). Record the
-        # human approval but do not execute — never try to PR an action plan.
         if isinstance(remediation, ActionPlan):
-            self._approved[incident_id] = "action-plan-pending-execution"
-            self._trim_approved()
-            logger.info("action_plan_approved_pending_execution", incident_id=incident_id,
-                        steps=len(remediation.steps), blast_radius=remediation.blast_radius.value)
-            return {"status": "approved_pending_execution", "incident_id": incident_id,
-                    "kind": "action_plan", "steps": len(remediation.steps),
-                    "detail": "ActionPlan approved; gated execution lands in Stone 3."}
+            return await self._approve_action_plan(incident_id, remediation, entry, runner)
+        return await self._approve_code_patch(incident_id, remediation, telemetry, entry, vcs_provider)
 
-        # CodePatch (default): open a PR.
+    async def _approve_code_patch(self, incident_id, patch, telemetry, entry, vcs_provider) -> Dict:
         try:
-            pr_url = await vcs_provider.create_pull_request(remediation, telemetry)
+            pr_url = await vcs_provider.create_pull_request(patch, telemetry)
         except Exception as e:  # noqa: BLE001
             # Restore so the operator can retry after a transient VCS failure.
             self._pending[incident_id] = entry
             self._pending.move_to_end(incident_id, last=False)
+            metrics.actions_executed.labels(type="code_patch", result="error").inc()
             logger.error("pull_request_creation_failed", incident_id=incident_id, error=str(e))
             return {"status": "error", "incident_id": incident_id, "error": str(e)}
 
         self._approved[incident_id] = pr_url
         self._trim_approved()
         metrics.patches_deployed.inc()
+        metrics.actions_executed.labels(type="code_patch", result="deployed").inc()
         logger.info("patch_approved_pr_opened", incident_id=incident_id,
-                    file=remediation.file_path, pr_url=pr_url)
+                    file=patch.file_path, pr_url=pr_url)
         return {"status": "deployed", "incident_id": incident_id,
-                "file": remediation.file_path, "pr_url": pr_url}
+                "file": patch.file_path, "pr_url": pr_url}
+
+    async def _approve_action_plan(self, incident_id, plan, entry, runner) -> Dict:
+        # Lazy import keeps approvals importable without the executor stack.
+        if runner is None:
+            from aegis_sre.orchestrator.remediation_runner import RemediationRunner
+            runner = RemediationRunner()
+        outcome = await runner.run(plan, approved=True, verification=plan.verification)
+
+        mode = outcome.executed.mode  # live | dry_run | blocked
+        if mode == "blocked":
+            # Policy refused — restore so the operator can adjust and retry.
+            self._pending[incident_id] = entry
+            self._pending.move_to_end(incident_id, last=False)
+            status, result = "blocked", "blocked"
+        elif outcome.rolled_back:
+            status, result = "rolled_back", "rolled_back"
+        else:
+            status, result = "executed", ("live" if mode == "live" else "dry_run")
+
+        if status != "blocked":
+            self._approved[incident_id] = f"action-plan:{result}"
+            self._trim_approved()
+        metrics.actions_executed.labels(type="action_plan", result=result).inc()
+        audit = {"steps": [s.__dict__ for s in outcome.executed.steps], **outcome.executed.audit}
+        logger.info("action_plan_executed", incident_id=incident_id, mode=mode,
+                    status=status, resolved=outcome.resolved, rolled_back=outcome.rolled_back)
+        return {"status": status, "incident_id": incident_id, "kind": "action_plan",
+                "mode": mode, "resolved": outcome.resolved, "rolled_back": outcome.rolled_back,
+                "reason": outcome.executed.reason, "audit": audit}
 
     def _trim_approved(self) -> None:
         while len(self._approved) > self.max_size:

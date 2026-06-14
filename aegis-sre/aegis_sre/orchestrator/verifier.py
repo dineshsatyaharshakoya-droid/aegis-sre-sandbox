@@ -18,25 +18,14 @@ we never claim recovery we couldn't observe.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from typing import Optional
 
+# Comparator + VerificationCheck live in schemas (so ActionPlan can embed a
+# check); re-exported here for back-compat with existing imports.
+from aegis_sre.orchestrator.schemas import Comparator, VerificationCheck
 from aegis_sre.telemetry.logger import logger
 
-
-class Comparator(str, Enum):
-    LT = "lt"
-    LTE = "lte"
-    GT = "gt"
-    GTE = "gte"
-    EQ = "eq"
-
-
-@dataclass
-class VerificationCheck:
-    query: str
-    comparator: Comparator
-    threshold: float
+__all__ = ["Comparator", "VerificationCheck", "VerificationResult", "Verifier"]
 
 
 @dataclass

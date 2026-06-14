@@ -123,6 +123,23 @@ class ActionStep(BaseModel):
         return v
 
 
+class Comparator(str, Enum):
+    """How an observed metric is compared to its healthy threshold (D4)."""
+    LT = "lt"
+    LTE = "lte"
+    GT = "gt"
+    GTE = "gte"
+    EQ = "eq"
+
+
+class VerificationCheck(BaseModel):
+    """A post-action recovery check: re-read `query` and confirm it satisfies
+    `comparator threshold` (e.g. error-rate LT 0.05, or up GTE 1)."""
+    query: str = Field(description="PromQL that should return the metric to check.")
+    comparator: Comparator
+    threshold: float
+
+
 class ActionPlan(Remediation):
     """A non-code remediation: an ordered set of gated infrastructure actions
     (cordon a node, requeue a job, scale a deployment). Stone-3 executes these
@@ -136,6 +153,8 @@ class ActionPlan(Remediation):
     rollback_steps: List[ActionStep] = Field(
         default_factory=list,
         description="Compensating actions run automatically if post-action verification fails.")
+    verification: Optional[VerificationCheck] = Field(
+        default=None, description="Recovery check re-read after a live execution to confirm the fix.")
 
     @field_validator('steps')
     @classmethod

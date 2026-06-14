@@ -50,15 +50,53 @@ def test_codepatch_approval_opens_pr():
     assert vcs.calls == 1
 
 
-def test_actionplan_approval_is_recorded_not_executed():
+def test_actionplan_approval_executes_dry_run_by_default():
+    # D3: approving an ActionPlan now drives the runner; default policy = dry-run.
     reg = ApprovalRegistry()
     vcs = _FakeVCS()
     reg.register("i2", _plan(), TELE)
     res = asyncio.run(reg.approve("i2", vcs))
-    assert res["status"] == "approved_pending_execution"
-    assert res["kind"] == "action_plan"
-    assert res["steps"] == 1
+    assert res["status"] == "executed"
+    assert res["mode"] == "dry_run"
+    assert res["resolved"] is False
     assert vcs.calls == 0  # an action plan must never be PR'd
+
+
+class _FakeOutcome:
+    def __init__(self, mode, resolved, rolled_back):
+        self.executed = type("E", (), {"mode": mode, "reason": "r", "audit": {}, "steps": []})()
+        self.resolved = resolved
+        self.rolled_back = rolled_back
+
+
+class _FakeRunner:
+    def __init__(self, outcome): self._o = outcome
+    async def run(self, plan, *, approved, verification=None): return self._o
+
+
+def test_actionplan_live_resolved_via_injected_runner():
+    reg = ApprovalRegistry()
+    reg.register("i5", _plan(), TELE)
+    runner = _FakeRunner(_FakeOutcome("live", resolved=True, rolled_back=False))
+    res = asyncio.run(reg.approve("i5", _FakeVCS(), runner=runner))
+    assert res["status"] == "executed" and res["mode"] == "live" and res["resolved"] is True
+
+
+def test_actionplan_rolled_back_via_injected_runner():
+    reg = ApprovalRegistry()
+    reg.register("i6", _plan(), TELE)
+    runner = _FakeRunner(_FakeOutcome("live", resolved=False, rolled_back=True))
+    res = asyncio.run(reg.approve("i6", _FakeVCS(), runner=runner))
+    assert res["status"] == "rolled_back" and res["rolled_back"] is True
+
+
+def test_actionplan_blocked_is_restored_for_retry():
+    reg = ApprovalRegistry()
+    reg.register("i7", _plan(), TELE)
+    runner = _FakeRunner(_FakeOutcome("blocked", resolved=False, rolled_back=False))
+    res = asyncio.run(reg.approve("i7", _FakeVCS(), runner=runner))
+    assert res["status"] == "blocked"
+    assert reg.pending_count() == 1  # restored, not consumed
 
 
 def test_actionplan_approval_is_idempotent():
