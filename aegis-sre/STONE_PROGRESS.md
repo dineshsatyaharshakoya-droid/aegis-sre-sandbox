@@ -9,7 +9,7 @@ each increment relaxes the two market-gating limiters and moves us toward the
 - **#1 Trigger modality** — crash/stack-trace → must become metric/alert/stream.
 - **#2 Remediation modality** — code patch/PR → must become live actions.
 
-_Last updated: through cycle D1. Tests: 116 passing. Latest fix-rate: 0.50 (2-case sample)._
+_Last updated: through cycle D1 (+ debug pass). Tests: 118 passing. Latest fix-rate: 0.50 (2-case sample)._
 
 ---
 
@@ -30,7 +30,7 @@ _Last updated: through cycle D1. Tests: 116 passing. Latest fix-rate: 0.50 (2-ca
 
 | Cycle | What | Bigger-picture contribution | Commit |
 |-------|------|-----------------------------|--------|
-| D1 | `policy.py` action gate (dry-run default, blast caps, allow/deny, audit) | **Starts limiter #2 live (safely)**: the gate the sellable product rests on; gates `registry` act-tools by risk + blast radius. | `pending` |
+| D1 | `policy.py` action gate (dry-run default, blast caps, allow/deny, audit) + debug-pass fix of a live-on-unarmed safety hole | **Starts limiter #2 live (safely)**: the gate the sellable product rests on; gates `registry` act-tools by risk + blast radius. | `6b47e30` |
 | C4 | Alertmanager webhook → `Signal(metric_alert)` → swarm | **Relaxes limiter #1 live**: a metric alert (not just a crash) now triggers the repair loop. Completes Stone 2's trigger half. | `81d370c` |
 | C1 | Risk-classed tool registry (`read`/`notify`/`act`) | Keystone for the sellable Stone 3: its policy engine gates `act` tools by risk. Retrofits ad-hoc tools. | `9f08744` |
 | B7 | Regression sweep | Fix-rate 0.50 unchanged — Stone 1 added zero quality regression. | verify |

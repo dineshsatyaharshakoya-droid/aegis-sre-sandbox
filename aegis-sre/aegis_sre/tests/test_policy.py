@@ -59,8 +59,27 @@ def test_actionplan_approved_but_unarmed_runs_dry_run_only():
 
 
 def test_actionplan_approved_and_armed_permits_live():
-    r = Policy(max_blast_radius=BlastRadius.HIGH).evaluate(_plan(dry_run=False), approved=True)
+    # Live needs BOTH gates open: env allows live (dry_run_default=False) AND armed.
+    pol = Policy(max_blast_radius=BlastRadius.HIGH, dry_run_default=False)
+    r = pol.evaluate(_plan(dry_run=False), approved=True)
     assert r.permits_live_execution is True
+
+
+def test_default_environment_is_dry_run_only():
+    # Default policy (dry_run_default=True) never goes live, even armed + approved.
+    r = Policy(max_blast_radius=BlastRadius.HIGH).evaluate(_plan(dry_run=False), approved=True)
+    assert r.decision is Decision.ALLOW and r.mode == "dry_run"
+    assert r.permits_live_execution is False
+
+
+def test_unarmed_plan_never_goes_live_even_when_env_allows_live():
+    # Regression: an unarmed plan (plan.dry_run=True) must stay dry-run even if the
+    # environment permits live actions. Previously this leaked to live.
+    pol = Policy(max_blast_radius=BlastRadius.HIGH, dry_run_default=False)
+    r = pol.evaluate(_plan(dry_run=True), approved=True)
+    assert r.mode == "dry_run"
+    assert r.permits_live_execution is False
+    assert r.audit["armed"] is False  # audit must report the truth
 
 
 def test_blast_radius_over_cap_is_denied():
@@ -84,7 +103,8 @@ def test_allow_list_blocks_unlisted_tool():
 
 
 def test_allow_list_permits_listed_tool():
-    pol = Policy(max_blast_radius=BlastRadius.HIGH, allow_tools={"k8s.cordon_node"})
+    pol = Policy(max_blast_radius=BlastRadius.HIGH, allow_tools={"k8s.cordon_node"},
+                 dry_run_default=False)
     r = pol.evaluate(_plan(tool="k8s.cordon_node", dry_run=False), approved=True)
     assert r.permits_live_execution is True
 

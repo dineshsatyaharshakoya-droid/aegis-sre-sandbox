@@ -130,16 +130,23 @@ class Policy:
                 self._audit(decision="require_approval", tools=tools,
                             blast_radius=plan.blast_radius.value))
 
-        # Approved. dry-run by default unless the plan is explicitly armed.
+        # Approved. Live execution is defense-in-depth: it requires BOTH the
+        # environment to permit live actions (dry_run_default=False) AND the plan
+        # to be explicitly armed (plan.dry_run=False). If either gate is closed we
+        # execute a dry-run. (Bug fix: previously an unarmed plan could go live
+        # when the environment set dry_run_default=False, ignoring the plan's own
+        # inert flag — and the audit reason mislabeled it "armed".)
         armed = plan.dry_run is False
-        if self.dry_run_default and not armed:
+        if self.dry_run_default or not armed:
+            reason = "environment is dry-run-only" if self.dry_run_default else "plan not armed"
             return PolicyResult(
                 Decision.ALLOW, "dry_run", True,
-                "Approved but not armed; executing dry-run (dry_run_default).",
+                f"Approved; executing dry-run ({reason}).",
                 self._audit(decision="allow", mode="dry_run", tools=tools,
-                            blast_radius=plan.blast_radius.value, approved=True, armed=False))
+                            blast_radius=plan.blast_radius.value, approved=True,
+                            armed=armed, dry_run_default=self.dry_run_default))
         return PolicyResult(
             Decision.ALLOW, "live", True,
-            "Approved and armed; live execution permitted.",
+            "Approved, armed, and environment permits live; live execution permitted.",
             self._audit(decision="allow", mode="live", tools=tools,
                         blast_radius=plan.blast_radius.value, approved=True, armed=True))
