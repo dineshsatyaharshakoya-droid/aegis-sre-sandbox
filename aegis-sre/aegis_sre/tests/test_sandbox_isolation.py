@@ -91,3 +91,119 @@ def test_rlimit_preexec_present_and_local_still_compiles():
     ok, _ = asyncio.run(LocalProcessEngine().compile_and_test(
         _patch("    return 1", "    return 2"), original_source="def f():\n    return 1\n"))
     assert ok is True
+
+
+# --- ContainerEngine orchestration (docker run mocked) ---
+
+def _container(monkeypatch, runner):
+    eng = ContainerEngine()
+    monkeypatch.setattr(ContainerEngine, "available", staticmethod(lambda: True))
+    async def fake_run(workdir, image, inner, timeout):
+        return runner(inner)
+    monkeypatch.setattr(eng, "_docker_run", fake_run)
+    return eng
+
+
+def test_container_compile_success_no_repro(monkeypatch):
+    eng = _container(monkeypatch, lambda inner: (0, "ok"))
+    ok, out = asyncio.run(eng.compile_and_test(_patch(), original_source="def f():\n    return 1\n"))
+    assert ok is True and "compiled in container" in out
+
+
+def test_container_compile_failure(monkeypatch):
+    eng = _container(monkeypatch, lambda inner: (1, "SyntaxError"))
+    ok, out = asyncio.run(eng.compile_and_test(_patch(), original_source="def f():\n    return 1\n"))
+    assert ok is False and "SyntaxError" in out
+
+
+def test_container_repro_pass_and_fail(monkeypatch):
+    # compile (first call) ok; repro (second call) decides
+    seq = {"n": 0}
+    def runner(inner):
+        seq["n"] += 1
+        return (0, "ok") if seq["n"] == 1 else (0, "repro-ok")
+    eng = _container(monkeypatch, runner)
+    ok, _ = asyncio.run(eng.compile_and_test(
+        _patch(), original_source="def f():\n    return 1\n", repro_command="pytest"))
+    assert ok is True
+
+    seq2 = {"n": 0}
+    def runner_fail(inner):
+        seq2["n"] += 1
+        return (0, "ok") if seq2["n"] == 1 else (1, "assert failed")
+    eng2 = _container(monkeypatch, runner_fail)
+    ok2, out2 = asyncio.run(eng2.compile_and_test(
+        _patch(), original_source="def f():\n    return 1\n", repro_command="pytest"))
+    assert ok2 is False and "Reproduction failed" in out2
+
+
+def test_container_patch_does_not_apply(monkeypatch):
+    eng = _container(monkeypatch, lambda inner: (0, "ok"))
+    ok, out = asyncio.run(eng.compile_and_test(
+        _patch(target="nonexistent"), original_source="def f():\n    return 1\n"))
+    assert ok is False and "does not apply" in out
+
+
+def test_container_no_compiler_fails_closed(monkeypatch):
+    eng = _container(monkeypatch, lambda inner: (0, "ok"))
+    ok, out = asyncio.run(eng.compile_and_test(
+        _patch(path="data.txt"), original_source=None))   # new-file: applies, no compiler
+    assert ok is False and "No compiler" in out
+
+
+# --- E2BEngine paths (no real E2B; SDK mocked) ---
+
+def test_e2b_fails_closed_without_key(monkeypatch):
+    monkeypatch.delenv("E2B_API_KEY", raising=False)
+    ok, out = asyncio.run(E2BEngine().compile_and_test(
+        _patch(), original_source="def f():\n    return 1\n"))
+    assert ok is False and "E2B_API_KEY" in out
+
+
+def test_e2b_patch_does_not_apply(monkeypatch):
+    monkeypatch.setenv("E2B_API_KEY", "k")
+    ok, out = asyncio.run(E2BEngine().compile_and_test(
+        _patch(target="nope"), original_source="def f():\n    return 1\n"))
+    assert ok is False and "does not apply" in out
+
+
+def _install_fake_e2b(monkeypatch, exit_code=0, repro_code=0):
+    import sys, types
+    class _Proc:
+        def __init__(self, code): self.exit_code = code; self.stderr = "err"
+        def wait(self): pass
+    class _Sandbox:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        filesystem = property(lambda self: self)
+        def write(self, *a, **k): pass
+        class _P:
+            pass
+        @property
+        def process(self):
+            outer = self
+            class _PR:
+                def start(self_inner, cmd):
+                    # first call = compile, contains py_compile; else repro
+                    return _Proc(exit_code if "py_compile" in cmd or "--check" in cmd or "gofmt" in cmd else repro_code)
+            return _PR()
+    mod = types.ModuleType("e2b")
+    mod.Sandbox = _Sandbox
+    monkeypatch.setitem(sys.modules, "e2b", mod)
+
+
+def test_e2b_compile_success_no_repro(monkeypatch):
+    monkeypatch.setenv("E2B_API_KEY", "k")
+    _install_fake_e2b(monkeypatch, exit_code=0)
+    ok, out = asyncio.run(E2BEngine().compile_and_test(
+        _patch(), original_source="def f():\n    return 1\n"))
+    assert ok is True and "E2B" in out
+
+
+def test_e2b_compile_failure(monkeypatch):
+    monkeypatch.setenv("E2B_API_KEY", "k")
+    _install_fake_e2b(monkeypatch, exit_code=1)
+    ok, out = asyncio.run(E2BEngine().compile_and_test(
+        _patch(), original_source="def f():\n    return 1\n"))
+    assert ok is False

@@ -1,0 +1,20 @@
+# Aegis SRE — test/dev tooling (see TESTING_STRATEGY.md)
+# Functional + coverage
+pytest>=9.1
+pytest-asyncio>=1.4
+pytest-cov>=6.0
+pytest-xdist>=3.6
+coverage>=7.14
+# Property-based + API fuzz
+hypothesis>=6.100
+schemathesis>=3.30
+# Mocking / determinism
+fakeredis>=2.23
+respx>=0.21
+freezegun>=1.5
+faker>=25.0
+# Load + benchmark
+locust>=2.29
+pytest-benchmark>=4.0
+# Mutation testing
+mutmut>=2.5
