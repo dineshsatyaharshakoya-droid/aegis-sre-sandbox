@@ -83,3 +83,40 @@ def test_read_tools_have_handlers_wired():
 
 def test_get_tool_registry_is_singleton():
     assert get_tool_registry() is get_tool_registry()
+
+
+# --- C6: metered invoke ---
+
+def test_invoke_calls_handler_and_returns():
+    import asyncio
+    reg = ToolRegistry()
+    seen = {}
+    async def h(**kw):
+        seen.update(kw); return "done"
+    reg.register("k8s.scale", RiskClass.ACT, "scale", handler=h)
+    out = asyncio.run(reg.invoke("k8s.scale", replicas=3))
+    assert out == "done" and seen == {"replicas": 3}
+
+
+def test_invoke_without_handler_raises():
+    import asyncio
+    reg = ToolRegistry()
+    reg.register("noop", RiskClass.READ, "no handler")
+    try:
+        asyncio.run(reg.invoke("noop"))
+        assert False
+    except ValueError as e:
+        assert "no handler" in str(e)
+
+
+def test_invoke_records_error_and_reraises():
+    import asyncio
+    reg = ToolRegistry()
+    async def boom(**kw):
+        raise RuntimeError("kubectl failed")
+    reg.register("k8s.delete", RiskClass.ACT, "delete", handler=boom)
+    try:
+        asyncio.run(reg.invoke("k8s.delete"))
+        assert False
+    except RuntimeError as e:
+        assert "kubectl failed" in str(e)

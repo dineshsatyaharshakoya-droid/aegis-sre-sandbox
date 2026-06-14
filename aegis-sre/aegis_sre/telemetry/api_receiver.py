@@ -367,22 +367,50 @@ async def receive_alertmanager_webhook(
     ingest pipeline as crashes. Resolved alerts are ignored.
     """
     _enforce(request, x_aegis_token)
+    from aegis_sre.telemetry.alert_adapter import parse_alertmanager
+    return await _ingest_signals(parse_alertmanager(await _json(request)), "alertmanager")
+
+
+@app.post("/webhook/datadog")
+async def receive_datadog_webhook(
+    request: Request,
+    x_aegis_token: Optional[str] = Header(default=None, alias="X-Aegis-Token"),
+):
+    """Datadog alert webhook adapter (C5) -> Signal(metric_alert) -> swarm."""
+    _enforce(request, x_aegis_token)
+    from aegis_sre.telemetry.alert_adapter import parse_datadog
+    return await _ingest_signals(parse_datadog(await _json(request)), "datadog")
+
+
+@app.post("/webhook/pagerduty")
+async def receive_pagerduty_webhook(
+    request: Request,
+    x_aegis_token: Optional[str] = Header(default=None, alias="X-Aegis-Token"),
+):
+    """PagerDuty v3 webhook adapter (C5) -> Signal(metric_alert) -> swarm."""
+    _enforce(request, x_aegis_token)
+    from aegis_sre.telemetry.alert_adapter import parse_pagerduty
+    return await _ingest_signals(parse_pagerduty(await _json(request)), "pagerduty")
+
+
+async def _json(request: Request) -> dict:
     try:
-        payload = json.loads(await request.body())
+        return json.loads(await request.body())
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    from aegis_sre.telemetry.alert_adapter import parse_alertmanager
-    signals = parse_alertmanager(payload)
-    if not signals:
-        return {"status": "ignored", "reason": "no_firing_alerts", "source": "alertmanager"}
 
+async def _ingest_signals(signals, source: str) -> dict:
+    """Shared path for all alert adapters: each firing Signal -> TelemetryEvent ->
+    the existing ingest pipeline."""
+    if not signals:
+        return {"status": "ignored", "reason": "no_firing_alerts", "source": source}
     results = []
     for signal in signals:
         result = await _process_telemetry(signal.to_telemetry())
         results.append({"signal_id": signal.signal_id, **result})
     accepted = sum(1 for r in results if r.get("status") == "accepted")
-    return {"status": "accepted", "source": "alertmanager",
+    return {"status": "accepted", "source": source,
             "firing": len(signals), "accepted": accepted, "results": results}
 
 @app.get("/metrics")

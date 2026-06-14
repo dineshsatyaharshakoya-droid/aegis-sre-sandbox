@@ -94,6 +94,19 @@ actions_executed = Counter(
     ["type", "result"],  # type: code_patch|action_plan · result: deployed|dry_run|live|rolled_back|blocked|error
 )
 
+# --- MCP / tool registry (C6) ----------------------------------------------
+tool_calls = Counter(
+    "aegis_tool_calls_total",
+    "Registry tool invocations by tool and result",
+    ["tool", "result"],  # result: ok | error
+)
+tool_latency = Histogram(
+    "aegis_tool_latency_seconds",
+    "Registry tool invocation latency",
+    ["tool"],
+    buckets=(0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10),
+)
+
 # --- Security --------------------------------------------------------------
 auth_rejections = Counter(
     "aegis_auth_rejections_total",

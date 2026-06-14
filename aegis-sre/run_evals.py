@@ -125,6 +125,24 @@ def load_corpus(path: str) -> list:
     return cases
 
 
+def context_delta(report_with: dict, report_without: dict) -> dict:
+    """Compare two scored eval reports (C7) — e.g. diagnosis WITH vs WITHOUT live
+    metric/log context — and report the fix-rate delta and which cases changed
+    verdict. The two reports are produced by running the eval in each mode; this
+    is the 'delta reported' surface that quantifies whether live context helps."""
+    mw = report_with.get("mean_fix_rate", 0.0)
+    mo = report_without.get("mean_fix_rate", 0.0)
+    by_with = {r["id"]: r for r in report_with.get("results", [])}
+    by_without = {r["id"]: r for r in report_without.get("results", [])}
+    changed = []
+    for cid in sorted(set(by_with) & set(by_without)):
+        vw, vo = by_with[cid]["verdict"], by_without[cid]["verdict"]
+        if vw != vo:
+            changed.append({"id": cid, "without_context": vo, "with_context": vw})
+    return {"mean_with_context": mw, "mean_without_context": mo,
+            "delta": round(mw - mo, 4), "cases_changed": changed}
+
+
 def aggregate(results: list, threshold: float) -> dict:
     """Reduce per-case results to a mean fix-rate, verdict counts, and pass/fail.
     Pure (no I/O) so the CI-gate math is unit-testable without an LLM."""

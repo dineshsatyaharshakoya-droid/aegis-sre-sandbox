@@ -73,3 +73,41 @@ def test_webhook_alert_endpoint_ignores_all_resolved():
     res = client.post("/webhook/alert", json={"alerts": [dict(_firing(), status="resolved")]})
     assert res.status_code == 200
     assert res.json()["status"] == "ignored"
+
+
+# --- C5: Datadog + PagerDuty adapters ---
+
+from aegis_sre.telemetry.alert_adapter import parse_datadog, parse_pagerduty
+
+
+def test_parse_datadog_firing():
+    [s] = parse_datadog({"id": "dd1", "title": "High CPU", "body": "cpu>90%",
+                         "alert_type": "error", "tags": "service:payments,env:prod"})
+    assert s.signal_id == "DD-dd1" and s.service_name == "payments"
+    assert s.kind is SignalKind.METRIC_ALERT and "High CPU" in s.body
+
+
+def test_parse_datadog_recovery_skipped():
+    assert parse_datadog({"id": "dd2", "title": "ok", "alert_type": "recovery"}) == []
+
+
+def test_parse_pagerduty_triggered():
+    [s] = parse_pagerduty({"event": {"event_type": "incident.triggered",
+        "data": {"id": "pd1", "title": "DB down", "urgency": "high",
+                 "service": {"summary": "orders-db"}}}})
+    assert s.signal_id == "PD-pd1" and s.service_name == "orders-db" and "DB down" in s.body
+
+
+def test_parse_pagerduty_resolved_skipped():
+    assert parse_pagerduty({"event": {"event_type": "incident.resolved", "data": {}}}) == []
+
+
+def test_datadog_and_pagerduty_endpoints():
+    r1 = client.post("/webhook/datadog", json={"id": "dd9", "title": "T", "alert_type": "error",
+                                               "tags": "service:api"})
+    assert r1.status_code == 200 and r1.json()["source"] == "datadog"
+    r2 = client.post("/webhook/pagerduty", json={"event": {"event_type": "incident.triggered",
+        "data": {"id": "pd9", "title": "T", "service": {"summary": "api"}}}})
+    assert r2.status_code == 200 and r2.json()["source"] == "pagerduty"
+    r3 = client.post("/webhook/pagerduty", json={"event": {"event_type": "incident.acknowledged", "data": {}}})
+    assert r3.json()["status"] == "ignored"

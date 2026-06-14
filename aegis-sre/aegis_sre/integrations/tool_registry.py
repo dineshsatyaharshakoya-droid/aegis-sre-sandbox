@@ -80,6 +80,27 @@ class ToolRegistry:
         """The tools the Stone-3 policy must gate (everything that can mutate)."""
         return self.list(risk=RiskClass.ACT)
 
+    async def invoke(self, name: str, **kwargs):
+        """Call a tool's handler, recording per-tool call count + latency (C6).
+        Raises if the tool is unknown or has no handler; records result=error and
+        re-raises if the handler itself fails."""
+        import time
+        from aegis_sre.telemetry import metrics
+
+        tool = self.get(name)
+        if tool.handler is None:
+            raise ValueError(f"tool {name!r} has no handler")
+        started = time.monotonic()
+        try:
+            result = await tool.handler(**kwargs)
+        except Exception:
+            metrics.tool_calls.labels(tool=name, result="error").inc()
+            metrics.tool_latency.labels(tool=name).observe(time.monotonic() - started)
+            raise
+        metrics.tool_calls.labels(tool=name, result="ok").inc()
+        metrics.tool_latency.labels(tool=name).observe(time.monotonic() - started)
+        return result
+
 
 # --- handlers (thin, lazy wrappers over the existing typed tools) -------------
 
@@ -100,6 +121,14 @@ async def _prometheus_query_range(promql: str, start: float, end: float, step: s
     return await client.query_range(promql, start=start, end=end, step=step)
 
 
+async def _logs_query(logql: str, **kwargs):
+    from aegis_sre.orchestrator.logs_tools import get_logs_client
+    client = get_logs_client()
+    if client is None:
+        raise RuntimeError("LOKI_URL not configured")
+    return await client.query(logql, **kwargs)
+
+
 async def _gitops_create_pull_request(patch, telemetry):
     from aegis_sre.orchestrator.vcs_provider import get_vcs_provider
     return await get_vcs_provider().create_pull_request(patch, telemetry)
@@ -113,6 +142,8 @@ def build_default_registry() -> ToolRegistry:
                  "Run an instant PromQL query.", handler=_prometheus_query)
     reg.register("prometheus.query_range", RiskClass.READ,
                  "Run a range PromQL query.", handler=_prometheus_query_range)
+    reg.register("logs.query", RiskClass.READ,
+                 "Query recent logs via LogQL.", handler=_logs_query)
     # NOTIFY — outbound incident comms (the "voice").
     reg.register("incident.trigger", RiskClass.NOTIFY, "Fire an incident alert.")
     reg.register("incident.acknowledge", RiskClass.NOTIFY, "Acknowledge an incident.")

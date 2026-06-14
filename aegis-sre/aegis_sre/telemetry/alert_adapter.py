@@ -14,13 +14,56 @@ broker, swarm, live Prometheus eyes) is reused unchanged.
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from aegis_sre.orchestrator.schemas import Signal, SignalKind
 
 
 def _service_of(labels: dict) -> str:
     return labels.get("service") or labels.get("job") or labels.get("namespace") or "unknown"
+
+
+def _service_from_tags(tags) -> Optional[str]:
+    """Datadog tags may be a list or comma string; pull `service:<name>`."""
+    if isinstance(tags, str):
+        tags = tags.split(",")
+    for t in tags or []:
+        t = t.strip()
+        if t.startswith("service:"):
+            return t.split(":", 1)[1]
+    return None
+
+
+def parse_datadog(payload: dict) -> List[Signal]:
+    """Datadog alert webhook -> Signal(metric_alert). Recovery events are skipped."""
+    alert_type = (payload.get("alert_type") or "").lower()
+    if alert_type in ("success", "recovery"):
+        return []
+    title = payload.get("title") or payload.get("alert_title") or "DatadogAlert"
+    body = payload.get("body") or payload.get("alert_body") or title
+    aid = payload.get("id") or payload.get("alert_id") or title
+    tags = payload.get("tags") or ""
+    service = payload.get("host") or _service_from_tags(tags) or "unknown"
+    blocks = [f"ALERT: {title}", f"body: {body}"]
+    if tags:
+        blocks.append(f"tags: {tags}")
+    return [Signal(signal_id=f"DD-{aid}", service_name=service, kind=SignalKind.METRIC_ALERT,
+                   body="\n".join(blocks),
+                   metadata={"source": "datadog", "alert_type": alert_type, "tags": tags})]
+
+
+def parse_pagerduty(payload: dict) -> List[Signal]:
+    """PagerDuty v3 webhook -> Signal(metric_alert). Only `incident.triggered` fires."""
+    event = payload.get("event", {}) or {}
+    if event.get("event_type") != "incident.triggered":
+        return []
+    data = event.get("data", {}) or {}
+    title = data.get("title", "PagerDutyIncident")
+    iid = data.get("id") or title
+    service = (data.get("service") or {}).get("summary", "unknown")
+    body = f"INCIDENT: {title}\nurgency: {data.get('urgency', '')}\nstatus: {data.get('status', '')}"
+    return [Signal(signal_id=f"PD-{iid}", service_name=service, kind=SignalKind.METRIC_ALERT,
+                   body=body, metadata={"source": "pagerduty", "urgency": data.get("urgency", "")})]
 
 
 def parse_alertmanager(payload: dict) -> List[Signal]:

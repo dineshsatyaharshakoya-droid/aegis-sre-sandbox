@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from run_evals import REQUIRED_FIELDS, aggregate, load_corpus, validate_corpus
+from run_evals import REQUIRED_FIELDS, aggregate, context_delta, load_corpus, validate_corpus
 
 CORPUS = Path(__file__).resolve().parents[2] / "eval" / "corpus.json"
 
@@ -71,3 +71,22 @@ def test_aggregate_fails_below_threshold():
 def test_aggregate_empty_is_zero_not_crash():
     agg = aggregate([], threshold=0.6)
     assert agg["mean"] == 0.0 and agg["passed"] is False and agg["n"] == 0
+
+
+# --- C7: with/without live-context delta ---
+
+def test_context_delta_reports_improvement():
+    rep_with = {"mean_fix_rate": 0.8, "results": [
+        {"id": "a", "verdict": "correct"}, {"id": "b", "verdict": "correct"}]}
+    rep_without = {"mean_fix_rate": 0.5, "results": [
+        {"id": "a", "verdict": "correct"}, {"id": "b", "verdict": "incorrect"}]}
+    d = context_delta(rep_with, rep_without)
+    assert d["delta"] == 0.3
+    assert d["mean_with_context"] == 0.8 and d["mean_without_context"] == 0.5
+    assert d["cases_changed"] == [{"id": "b", "without_context": "incorrect", "with_context": "correct"}]
+
+
+def test_context_delta_no_change():
+    rep = {"mean_fix_rate": 0.5, "results": [{"id": "a", "verdict": "correct"}]}
+    d = context_delta(rep, rep)
+    assert d["delta"] == 0.0 and d["cases_changed"] == []

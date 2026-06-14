@@ -9,7 +9,7 @@ each increment relaxes the two market-gating limiters and moves us toward the
 - **#1 Trigger modality** — crash/stack-trace → must become metric/alert/stream.
 - **#2 Remediation modality** — code patch/PR → must become live actions.
 
-_Last updated: through cycle D7 — **Stone 3 complete (sellable product reached)**. Tests: 195 passing. Coverage: ~81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
+_Last updated: Stone 2 + 3 complete. Tests: 213 passing. Coverage: ~81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
 
 ---
 
@@ -19,7 +19,7 @@ _Last updated: through cycle D7 — **Stone 3 complete (sellable product reached
 |-------|------|--------|---------------|
 | 0 — foundation | see/measure/operate the existing product | 🟩🟩🟩⬜ ~80% | — |
 | 1 — Signal/Remediation | model non-crash triggers + non-code fixes | ✅ done | #1 & #2 (model) |
-| 2 — MCP eyes | alert-triggered + live-context diagnosis | 🟩🟩🟩⬜ ~70% | **#1 (live)** |
+| 2 — MCP eyes | alert-triggered + live-context diagnosis | ✅ **done** | **#1 (live) — metrics+logs+registry+adapters** |
 | 3 — MCP hands (sellable) | gated live execution | ✅ **done** | **#2 (live) — full loop, e2e signed off** |
 | 4 — productionize | multi-tenant, secrets, CI gate | ⬜ 0% | — |
 | 5 — HPC/GPU wedge | premium vertical | ⬜ 0% | — |
@@ -30,7 +30,8 @@ _Last updated: through cycle D7 — **Stone 3 complete (sellable product reached
 
 | Cycle | What | Bigger-picture contribution | Commit |
 |-------|------|-----------------------------|--------|
-| D7 | staging end-to-end sign-off: alert→approve→execute→verify→rollback-on-forced-failure + dry-run-safe + idempotent, all real components | **Sellable product exit criterion met** — Stone 3 complete. | `pending` |
+| C3/C5/C6/C7 | Stone 2 to 100%: logs read tool (C3), Datadog+PagerDuty inbound adapters (C5), per-tool call/latency metrics (C6), with/without-context eval delta (C7) | **Completes the "eyes"**: broader live evidence + per-tool observability. | `pending` |
+| D7 | staging end-to-end sign-off: alert→approve→execute→verify→rollback-on-forced-failure + dry-run-safe + idempotent, all real components | **Sellable product exit criterion met** — Stone 3 complete. | `cb29fd9` |
 | D3+D6 | wire the runner into approval (`approve(ActionPlan)` → execute→verify→rollback) + audit records + `aegis_actions_executed_total{type,result}` | **Limiter #2 fully live & observable**: approving an action drives the gated loop; every outcome audited + counted. | `c699eff` |
 | D5 | execute→verify→rollback spine (`remediation_runner.py` + `ActionPlan.rollback_steps` + executor rollback) | **Completes the safe-action loop**: failed verification auto-runs compensating steps; only proven recoveries stand. | `df991d4` |
 | D4 | `verifier.py` — re-read the metric to confirm recovery (per-series, fail-closed) + debug-pass fix of a GTE worst-case-aggregation bug | **Makes actions non-fire-and-forget**: proof a remediation worked, the gate before rollback (D5). | `caf7a0f` |

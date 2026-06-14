@@ -99,9 +99,9 @@ class ActionExecutor:
                 results.append(StepResult(tool=s.tool, status="error", error=err))
                 logger.error("action_step_refused", tool=s.tool, error=err)
                 break
-            tool = self.registry.get(s.tool)
             try:
-                out = await tool.handler(**s.args)
+                # invoke() records per-tool call count + latency (C6).
+                out = await self.registry.invoke(s.tool, **s.args)
                 results.append(StepResult(tool=s.tool, status="executed", output=str(out)))
                 logger.info("action_step_executed", tool=s.tool)
             except Exception as e:  # noqa: BLE001 - record + stop on first failure
