@@ -107,6 +107,13 @@ tool_latency = Histogram(
     buckets=(0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10),
 )
 
+# --- Prompt-injection / unsafe-remediation defense (Batch 2) ----------------
+injection_flags = Counter(
+    "aegis_injection_flags_total",
+    "Suspected prompt-injection inputs / unsafe-remediation vetoes",
+    ["stage"],  # input | code_patch | action_plan
+)
+
 # --- Security --------------------------------------------------------------
 auth_rejections = Counter(
     "aegis_auth_rejections_total",
