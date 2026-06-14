@@ -118,7 +118,10 @@ def get_vcs_provider() -> VCSProvider:
     repo_url = os.environ.get("VCS_REPO_URL", "org/repo")
     
     if provider_name == "github":
-        return GitHubProvider(repo_url)
+        # Clone-based GitOps flow (clone -> branch -> apply -> commit -> push -> PR).
+        # Lazy import so the module stays importable without git_tools' deps.
+        from aegis_sre.orchestrator.git_tools import GitOpsProvider
+        return GitOpsProvider(repo_url)
     elif provider_name == "gitlab":
         return GitLabProvider(repo_url)
     else:
