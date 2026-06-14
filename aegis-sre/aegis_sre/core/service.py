@@ -92,6 +92,14 @@ class IncidentService:
         for payload_json in await self.store.get_pending_payloads():
             try:
                 event = TelemetryEvent.model_validate_json(payload_json)
+                # Claim-before-republish (A11): the cache claim is atomic across
+                # replicas (Redis SET NX), so only one replica re-publishes a given
+                # pending event — no double-processing during concurrent recovery.
+                if not await self.cache.claim(
+                    f"recovery:{event.event_id}", ttl_seconds=self.settings.dedup_ttl_seconds
+                ):
+                    logger.info("recovery_skipped_claimed_by_peer", event_id=event.event_id)
+                    continue
                 if await self.broker.publish(event.model_dump(mode="json")):
                     count += 1
             except Exception as e:  # noqa: BLE001

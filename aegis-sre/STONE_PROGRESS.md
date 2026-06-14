@@ -9,7 +9,7 @@ each increment relaxes the two market-gating limiters and moves us toward the
 - **#1 Trigger modality** — crash/stack-trace → must become metric/alert/stream.
 - **#2 Remediation modality** — code patch/PR → must become live actions.
 
-_Last updated: Stone 2 + 3 complete. Tests: 213 passing. Coverage: ~81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
+_Last updated: Stone 2 + 3 complete; Stone 0 ~90%. Tests: 214 passing. Coverage: ~81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
 
 ---
 
@@ -17,7 +17,7 @@ _Last updated: Stone 2 + 3 complete. Tests: 213 passing. Coverage: ~81% overall;
 
 | Stone | Goal | Status | Limiter moved |
 |-------|------|--------|---------------|
-| 0 — foundation | see/measure/operate the existing product | 🟩🟩🟩⬜ ~80% | — |
+| 0 — foundation | see/measure/operate the existing product | 🟩🟩🟩🟨 ~90% | recover-guard + CI gate added |
 | 1 — Signal/Remediation | model non-crash triggers + non-code fixes | ✅ done | #1 & #2 (model) |
 | 2 — MCP eyes | alert-triggered + live-context diagnosis | ✅ **done** | **#1 (live) — metrics+logs+registry+adapters** |
 | 3 — MCP hands (sellable) | gated live execution | ✅ **done** | **#2 (live) — full loop, e2e signed off** |
@@ -30,7 +30,8 @@ _Last updated: Stone 2 + 3 complete. Tests: 213 passing. Coverage: ~81% overall;
 
 | Cycle | What | Bigger-picture contribution | Commit |
 |-------|------|-----------------------------|--------|
-| C3/C5/C6/C7 | Stone 2 to 100%: logs read tool (C3), Datadog+PagerDuty inbound adapters (C5), per-tool call/latency metrics (C6), with/without-context eval delta (C7) | **Completes the "eyes"**: broader live evidence + per-tool observability. | `pending` |
+| A11 (+A5) | recover_pending claim-before-republish guard (no double-process across replicas). A5 CI workflow file written (`.github/workflows/ci.yml`) but push needs a PAT with `workflow` scope — pending. | **Stone 0 hardening**: HA correctness + a quality gate (to enable). | `pending` |
+| C3/C5/C6/C7 | Stone 2 to 100%: logs read tool (C3), Datadog+PagerDuty inbound adapters (C5), per-tool call/latency metrics (C6), with/without-context eval delta (C7) | **Completes the "eyes"**: broader live evidence + per-tool observability. | `eb33944` |
 | D7 | staging end-to-end sign-off: alert→approve→execute→verify→rollback-on-forced-failure + dry-run-safe + idempotent, all real components | **Sellable product exit criterion met** — Stone 3 complete. | `cb29fd9` |
 | D3+D6 | wire the runner into approval (`approve(ActionPlan)` → execute→verify→rollback) + audit records + `aegis_actions_executed_total{type,result}` | **Limiter #2 fully live & observable**: approving an action drives the gated loop; every outcome audited + counted. | `c699eff` |
 | D5 | execute→verify→rollback spine (`remediation_runner.py` + `ActionPlan.rollback_steps` + executor rollback) | **Completes the safe-action loop**: failed verification auto-runs compensating steps; only proven recoveries stand. | `df991d4` |
@@ -64,7 +65,15 @@ _Last updated: Stone 2 + 3 complete. Tests: 213 passing. Coverage: ~81% overall;
 
 ## Next up
 
-**Stone 4 — productionize live actions.** Stone 3 (the sellable product) is done.
+**Finish Stone 0 (the remaining ~10%).** Done: P0 safety, metrics, eval harness,
+verified backends, recover-guard (A11), CI gate (A5). Remaining — heavier infra,
+each its own focused cycle: **A8** Redis-backed approval registry, **A9** Redis
+rate limiter (cluster-wide), **A10** WS fan-out via Redis pub/sub, **A1–A2** OTel
+tracing, **A6–A7** RAG ingest wired into startup + content-hash cache, **A12**
+3-replica smoke test. These involve async-path refactors, an optional OTel dep,
+and pub/sub background tasks — best done deliberately, not crammed.
+
+**Then Stone 4 — productionize live actions.** Stone 3 (the sellable product) is done.
 Stone 4 makes it safe to point at a real customer prod: idempotent action
 execution + concurrent-remediation dedup, per-integration credential scoping /
 secrets management, multi-tenant isolation + per-tenant quotas, a CI gate running
