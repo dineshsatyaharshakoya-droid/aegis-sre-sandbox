@@ -162,6 +162,26 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+
+async def _alert(action: str, dedup_key: str, **kwargs) -> None:
+    """Fire an incident-alert lifecycle event, fully guarded. Alerting must never
+    break the repair loop, so any failure here is logged and swallowed."""
+    try:
+        from aegis_sre.orchestrator.incident_tools import get_incident_notifier
+
+        notifier = get_incident_notifier()
+        if notifier is None:
+            return  # alerting disabled (ALERT_WEBHOOK_URL unset)
+        if action == "trigger":
+            await notifier.trigger(dedup_key=dedup_key, **kwargs)
+        elif action == "acknowledge":
+            await notifier.acknowledge(dedup_key, **kwargs)
+        elif action == "resolve":
+            await notifier.resolve(dedup_key, **kwargs)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("incident_alert_dispatch_failed", action=action, dedup_key=dedup_key, error=str(e))
+
+
 async def trigger_repair_loop(telemetry: TelemetryEvent):
     """
     Runs the Aegis LangGraph orchestrator asynchronously in the background.
@@ -180,11 +200,18 @@ async def trigger_repair_loop(telemetry: TelemetryEvent):
     try:
         await manager.broadcast({
             "incident_id": telemetry.event_id,
-            "type": "telemetry_received", 
-            "service": telemetry.service_name, 
+            "type": "telemetry_received",
+            "service": telemetry.service_name,
             "crash": telemetry.crash_log
         })
-        
+
+        # Fire the incident alert as repair begins (guarded: alerting must never
+        # break the repair loop). Keyed by event_id so ack/resolve correlate.
+        await _alert("trigger", telemetry.event_id, severity="critical",
+                     description=f"Aegis repair started for {telemetry.service_name}",
+                     service=telemetry.service_name,
+                     crash_tail=telemetry.crash_log[-280:])
+
         # Stream graph execution steps to the WebSocket clients
         final_state = initial_state
         config = {"configurable": {"thread_id": telemetry.event_id}}
@@ -222,6 +249,9 @@ async def trigger_repair_loop(telemetry: TelemetryEvent):
                 "explanation": patch.explanation,
                 "diff": patch.replacement_content
             })
+            # A fix is proposed and awaiting human approval -> acknowledge.
+            await _alert("acknowledge", telemetry.event_id,
+                         note=f"Patch proposed for {patch.file_path}; awaiting approval.")
         else:
             logger.warning("Orchestrator completed but no patch was generated", service_name=telemetry.service_name)
         # Note: durable status ('completed'/'failed') is owned by ConsumerRunner,
@@ -234,6 +264,10 @@ async def trigger_repair_loop(telemetry: TelemetryEvent):
             "type": "error",
             "message": str(e)
         })
+        # Escalate: the autonomous repair failed -> keep the incident firing.
+        await _alert("trigger", telemetry.event_id, severity="critical",
+                     description=f"Aegis repair FAILED for {telemetry.service_name}: {e}",
+                     service=telemetry.service_name)
         raise  # re-raise so ConsumerRunner records 'failed' status
 
 async def _process_telemetry(event: TelemetryEvent) -> dict:
@@ -381,6 +415,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         "file": result["file"],
                         "pr_url": result["pr_url"],
                     })
+                    # Fix shipped (PR opened) -> resolve the incident alert.
+                    await _alert("resolve", incident_id,
+                                 note=f"Fix PR opened for {result['file']}: {result['pr_url']}")
                 else:
                     # not_found / already_approved / error -> tell the approver only.
                     await websocket.send_json({"type": "approval_result", **result})

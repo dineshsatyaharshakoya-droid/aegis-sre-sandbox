@@ -56,6 +56,10 @@ class Settings:
     # Prometheus HTTP API base (no trailing /api/v1). Empty => live-metrics
     # enrichment is skipped (the researcher still runs on VCS + RAG context).
     prometheus_url: str = field(default_factory=lambda: _env("PROMETHEUS_URL", ""))
+    # Incident alerting sink (PagerDuty Events v2-shaped POST). Empty => the
+    # repair loop runs without emitting external alerts.
+    alert_webhook_url: str = field(default_factory=lambda: _env("ALERT_WEBHOOK_URL", ""))
+    alert_routing_key: str = field(default_factory=lambda: _env("ALERT_ROUTING_KEY", "aegis-mock-routing-key"))
     sqlite_path: str = field(
         default_factory=lambda: _env(
             "AEGIS_SQLITE_PATH",
