@@ -30,7 +30,7 @@ _Last updated: Stone 2 + 3 complete; Stone 0 ~90%. Tests: 214 passing. Coverage:
 
 | Cycle | What | Bigger-picture contribution | Commit |
 |-------|------|-----------------------------|--------|
-| A11 (+A5) | recover_pending claim-before-republish guard (no double-process across replicas). A5 CI workflow file written (`.github/workflows/ci.yml`) but push needs a PAT with `workflow` scope — pending. | **Stone 0 hardening**: HA correctness + a quality gate (to enable). | `pending` |
+| A11+A5 | recover_pending claim-before-republish guard (no double-process across replicas) + GitHub Actions CI gate (suite + coverage + corpus schema) now live on remote | **Stone 0 hardening**: HA correctness + an enforced quality gate. | `2928312`/`65a81ee` |
 | C3/C5/C6/C7 | Stone 2 to 100%: logs read tool (C3), Datadog+PagerDuty inbound adapters (C5), per-tool call/latency metrics (C6), with/without-context eval delta (C7) | **Completes the "eyes"**: broader live evidence + per-tool observability. | `eb33944` |
 | D7 | staging end-to-end sign-off: alert→approve→execute→verify→rollback-on-forced-failure + dry-run-safe + idempotent, all real components | **Sellable product exit criterion met** — Stone 3 complete. | `cb29fd9` |
 | D3+D6 | wire the runner into approval (`approve(ActionPlan)` → execute→verify→rollback) + audit records + `aegis_actions_executed_total{type,result}` | **Limiter #2 fully live & observable**: approving an action drives the gated loop; every outcome audited + counted. | `c699eff` |
