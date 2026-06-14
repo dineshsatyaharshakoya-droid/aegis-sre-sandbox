@@ -69,10 +69,19 @@ def test_default_registry_classifies_known_tools():
     assert by_name["gitops.create_pull_request"].risk is RiskClass.ACT
 
 
-def test_default_registry_gated_tools_are_exactly_the_act_tools():
+def test_default_registry_gated_tools_are_the_act_tools():
     reg = build_default_registry()
     gated = {t.name for t in reg.gated_tools()}
-    assert gated == {"gitops.create_pull_request"}  # the only thing that mutates managed state today
+    assert "gitops.create_pull_request" in gated
+    assert {"k8s.cordon_node", "k8s.drain_node", "k8s.scale_deployment"} <= gated
+    # READ/NOTIFY tools are never gated
+    assert "prometheus.query" not in gated and "incident.trigger" not in gated
+
+
+def test_incident_tools_now_have_handlers_wired():
+    reg = build_default_registry()
+    for name in ("incident.trigger", "incident.acknowledge", "incident.resolve"):
+        assert callable(reg.get(name).handler)  # audit #7: were None before
 
 
 def test_read_tools_have_handlers_wired():

@@ -58,13 +58,20 @@ class GitHubProvider(VCSProvider):
             
             contents = await asyncio.to_thread(repo.get_contents, patch.file_path, ref=source_branch)
             commit_message = f"[Aegis] Auto-fix for {telemetry.service_name} crash"
-            
+
+            # Splice the patch into the FULL current file (audit #12 fix): writing
+            # patch.replacement_content directly truncated the file to the chunk
+            # (the P0-1 bug). apply_patch_to_source applies the chunk in context.
+            from aegis_sre.orchestrator.sandbox_engine import apply_patch_to_source
+            current_source = contents.decoded_content.decode("utf-8")
+            patched_source = apply_patch_to_source(patch, current_source)
+
             await asyncio.to_thread(
                 repo.update_file,
-                contents.path, 
-                commit_message, 
-                patch.replacement_content, 
-                contents.sha, 
+                contents.path,
+                commit_message,
+                patched_source,
+                contents.sha,
                 branch=new_branch_name
             )
             
@@ -96,10 +103,15 @@ class GitLabProvider(VCSProvider):
         return None
 
     async def create_pull_request(self, patch: PatchProposal, telemetry: TelemetryEvent) -> str:
-        logger.info("creating_pull_request", provider="gitlab", repo=self.repo_url)
+        # Honest failure (audit #11): the GitLab API path was never implemented and
+        # previously returned a hardcoded fake MR URL, silently pretending to work.
+        # Fail loudly so nobody mistakes a mock for a real MR; use VCS_PROVIDER=github.
         if not self.token:
+            logger.info("simulating_pull_request", provider="gitlab", repo=self.repo_url)
             return "mock-gitlab-mr-url"
-        return f"https://gitlab.com/{self.repo_url}/-/merge_requests/456"
+        raise NotImplementedError(
+            "GitLabProvider.create_pull_request is not implemented. Use VCS_PROVIDER=github "
+            "(clone-based GitOps), or implement the GitLab MR API here.")
 
 class LocalVCSProvider(VCSProvider):
     """Fallback for purely local testing without cloud VCS"""

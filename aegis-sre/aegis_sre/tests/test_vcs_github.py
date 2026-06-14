@@ -15,7 +15,7 @@ def _patch():
 
 
 class _Contents:
-    def __init__(self, content=b"file-bytes"):
+    def __init__(self, content=b"line1\nold\nline3\n"):
         self.path = "app/main.py"
         self.sha = "sha123"
         self.decoded_content = content
@@ -31,7 +31,8 @@ class _Repo:
     def get_git_ref(self, ref): return types.SimpleNamespace(object=types.SimpleNamespace(sha="basesha"))
     def create_git_ref(self, ref, sha): self.created["ref"] = ref
     def get_contents(self, path, ref=None): return _Contents()
-    def update_file(self, *a, **k): self.created["updated"] = True
+    def update_file(self, path, msg, content, sha, branch=None):
+        self.created["updated_content"] = content
     def create_pull(self, **kw): self.created["pull"] = kw; return _PR()
 
 
@@ -50,6 +51,8 @@ def test_github_create_pull_request_via_api(monkeypatch):
     assert repo.created["ref"] == "refs/heads/aegis-fix-abcd1234"
     assert repo.created["pull"]["head"] == "aegis-fix-abcd1234"
     assert repo.created["pull"]["base"] == "main"
+    # audit #12: full spliced file is written, not the bare replacement chunk
+    assert repo.created["updated_content"] == "line1\nnew\nline3\n"
 
 
 def test_github_fetch_file_content_via_api(monkeypatch):
@@ -57,7 +60,7 @@ def test_github_fetch_file_content_via_api(monkeypatch):
     prov = vp.GitHubProvider("org/repo")
     prov.g = _Github(_Repo())
     content = asyncio.run(prov.fetch_file_content("app/main.py"))
-    assert content == "file-bytes"
+    assert content == "line1\nold\nline3\n"
 
 
 def test_github_pr_api_error_returns_mock(monkeypatch):

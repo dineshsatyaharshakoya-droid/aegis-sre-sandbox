@@ -134,6 +134,20 @@ async def _gitops_create_pull_request(patch, telemetry):
     return await get_vcs_provider().create_pull_request(patch, telemetry)
 
 
+def _incident_handler(action: str):
+    async def handler(**kwargs):
+        from aegis_sre.orchestrator.incident_tools import get_incident_notifier
+        notifier = get_incident_notifier()
+        if notifier is None:
+            raise RuntimeError("ALERT_WEBHOOK_URL not configured")
+        if action == "trigger":
+            return await notifier.trigger(**kwargs)
+        if action == "acknowledge":
+            return await notifier.acknowledge(kwargs.pop("dedup_key"), **kwargs)
+        return await notifier.resolve(kwargs.pop("dedup_key"), **kwargs)
+    return handler
+
+
 def build_default_registry() -> ToolRegistry:
     """Register the tools Aegis ships today, classified by risk."""
     reg = ToolRegistry()
@@ -144,14 +158,22 @@ def build_default_registry() -> ToolRegistry:
                  "Run a range PromQL query.", handler=_prometheus_query_range)
     reg.register("logs.query", RiskClass.READ,
                  "Query recent logs via LogQL.", handler=_logs_query)
-    # NOTIFY — outbound incident comms (the "voice").
-    reg.register("incident.trigger", RiskClass.NOTIFY, "Fire an incident alert.")
-    reg.register("incident.acknowledge", RiskClass.NOTIFY, "Acknowledge an incident.")
-    reg.register("incident.resolve", RiskClass.NOTIFY, "Resolve an incident.")
+    # NOTIFY — outbound incident comms (the "voice"). Wired to the IncidentNotifier.
+    reg.register("incident.trigger", RiskClass.NOTIFY, "Fire an incident alert.",
+                 handler=_incident_handler("trigger"))
+    reg.register("incident.acknowledge", RiskClass.NOTIFY, "Acknowledge an incident.",
+                 handler=_incident_handler("acknowledge"))
+    reg.register("incident.resolve", RiskClass.NOTIFY, "Resolve an incident.",
+                 handler=_incident_handler("resolve"))
     # ACT — mutates managed state; GATED behind approval (the "hands").
     reg.register("gitops.create_pull_request", RiskClass.ACT,
                  "Open a fix PR (clone -> branch -> patch -> push -> PR).",
                  handler=_gitops_create_pull_request)
+    # ACT — Kubernetes remediation tools (kubectl-backed).
+    from aegis_sre.orchestrator.k8s_tools import K8S_ACT_TOOLS
+    for name, handler in K8S_ACT_TOOLS.items():
+        verb = name.split(".", 1)[1].replace("_", " ")
+        reg.register(name, RiskClass.ACT, f"Kubernetes: {verb}.", handler=handler)
     return reg
 
 

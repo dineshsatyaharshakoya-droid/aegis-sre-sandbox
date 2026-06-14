@@ -53,6 +53,14 @@ def test_gitlab_provider_without_token_is_mock(monkeypatch):
     assert asyncio.run(prov.create_pull_request(_patch(), TELE)) == "mock-gitlab-mr-url"
 
 
+def test_gitlab_provider_with_token_fails_honestly(monkeypatch):
+    # audit #11: no more hardcoded fake MR URL — fail loudly instead.
+    monkeypatch.setenv("GITLAB_TOKEN", "tok")
+    prov = vp.GitLabProvider("org/repo")
+    with pytest.raises(NotImplementedError):
+        asyncio.run(prov.create_pull_request(_patch(), TELE))
+
+
 def test_github_provider_without_token_simulates(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     prov = vp.GitHubProvider("org/repo")
