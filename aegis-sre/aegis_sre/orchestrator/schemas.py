@@ -1,6 +1,6 @@
 from enum import Enum
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 class TelemetryEvent(BaseModel):
     """
@@ -98,6 +98,48 @@ class CodePatch(Remediation):
 # Back-compat alias: existing imports/constructions of `PatchProposal` continue to
 # work unchanged (it *is* a CodePatch). Phases B2+ migrate call sites to CodePatch.
 PatchProposal = CodePatch
+
+
+class BlastRadius(str, Enum):
+    """How much an action can affect if it goes wrong — the key input to the
+    Stone-3 risk-tiered approval policy. LOW = single reversible resource;
+    HIGH = cluster-wide or irreversible."""
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class ActionStep(BaseModel):
+    """One typed step in an `ActionPlan`: an `act` tool call with its arguments."""
+    tool: str = Field(description="The act-tool to invoke, e.g. 'k8s.cordon_node'.")
+    args: Dict[str, Any] = Field(default_factory=dict, description="Arguments for the tool.")
+    description: str = Field(default="", description="Human-readable intent of this step.")
+
+    @field_validator('tool')
+    @classmethod
+    def tool_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("ActionStep.tool must be a non-empty tool name")
+        return v
+
+
+class ActionPlan(Remediation):
+    """A non-code remediation: an ordered set of gated infrastructure actions
+    (cordon a node, requeue a job, scale a deployment). Stone-3 executes these
+    behind a policy; until then this is schema-only. `dry_run` defaults True so a
+    plan is inert-by-default — it must be explicitly armed before it can act."""
+    kind: RemediationKind = RemediationKind.ACTION_PLAN
+    steps: List[ActionStep] = Field(description="Ordered, non-empty list of steps.")
+    blast_radius: BlastRadius = Field(default=BlastRadius.HIGH,
+                                      description="Fail-safe default: assume HIGH until assessed.")
+    dry_run: bool = Field(default=True, description="Safe by default; must be armed to execute.")
+
+    @field_validator('steps')
+    @classmethod
+    def steps_not_empty(cls, v: List[ActionStep]) -> List[ActionStep]:
+        if not v:
+            raise ValueError("ActionPlan must contain at least one step")
+        return v
 
 class SecurityReview(BaseModel):
     """
