@@ -21,7 +21,7 @@ async def test_graph_success_first_try(base_telemetry):
         app = build_graph()
          
         mock_exec.return_value = {
-            "current_patch": PatchProposal(file_path="f.py", target_content="a", replacement_content="b", explanation="fix"),
+            "current_patch": PatchProposal(file_path="f.py", target_content="a", replacement_content="b", explanation="fix", root_cause_analysis="Mocked root cause."),
             "iteration_count": 1,
             "sandbox_status": "pending"
         }
@@ -55,7 +55,7 @@ async def test_graph_retry_loop_on_sandbox_failure(base_telemetry):
     def mock_executor_logic(state):
         call_tracker["exec_calls"] += 1
         return {
-            "current_patch": PatchProposal(file_path="f.py", target_content="a", replacement_content="b", explanation="fix"),
+            "current_patch": PatchProposal(file_path="f.py", target_content="a", replacement_content="b", explanation="fix", root_cause_analysis="Mocked root cause."),
             "iteration_count": call_tracker["exec_calls"],
             "sandbox_status": "pending"
         }
@@ -97,7 +97,7 @@ async def test_graph_max_iterations_fail(base_telemetry):
     def mock_executor_logic(state):
         call_tracker["exec_calls"] += 1
         return {
-            "current_patch": PatchProposal(file_path="f.py", target_content="a", replacement_content="b", explanation="fix"),
+            "current_patch": PatchProposal(file_path="f.py", target_content="a", replacement_content="b", explanation="fix", root_cause_analysis="Mocked root cause."),
             "iteration_count": call_tracker["exec_calls"],
             "sandbox_status": "pending"
         }

@@ -1,0 +1,31 @@
+# Packaging + test configuration for Aegis SRE.
+#
+# Run-1 of the uploaded log failed at *collection* with
+# `ModuleNotFoundError: No module named 'aegis_sre'` — the project root was not
+# on sys.path (bare `pytest` under a non-venv interpreter). Two fixes here:
+#   * `[tool.pytest.ini_options].pythonpath = ["."]` puts the repo root on the
+#     path so `pytest` "just works" from this directory, no install required.
+#   * `[project]` makes `pip install -e .` possible for editable installs.
+# Runtime/dev dependencies still live in requirements*.txt; install those into a
+# venv (Python 3.13) and run tests with `./venv/bin/python -m pytest`.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aegis-sre"
+version = "0.1.0"
+description = "Aegis SRE — autonomous remediation platform"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+include = ["aegis_sre*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+pythonpath = ["."]
+# Only collect real unit tests; exclude manual *_test.py scripts
+# (storm_test.py, sentry_test.py, fire_three_incidents.py).
+python_files = ["test_*.py"]
+testpaths = ["aegis_sre/tests", "tests", "test_webhook.py"]
