@@ -111,7 +111,9 @@ def test_researcher_gathers_vcs_context(monkeypatch):
     assert "SKILL: restart" in out["code_context"]
 
 
-def test_researcher_falls_back_to_mock_when_no_files(monkeypatch):
+def test_researcher_no_source_message_in_prod(monkeypatch):
+    # Without the dev flag, the researcher must NOT inject fictional code (audit #10).
+    monkeypatch.delenv("AEGIS_ALLOW_MOCK_PATCH", raising=False)
     class FakeVCS:
         async def fetch_file_content(self, path): return None
     monkeypatch.setattr(graph, "get_vcs_provider", lambda: FakeVCS())
@@ -120,9 +122,61 @@ def test_researcher_falls_back_to_mock_when_no_files(monkeypatch):
     monkeypatch.setattr(graph, "_gather_live_metrics", no_metrics)
     out = asyncio.run(graph.researcher_node(
         {"telemetry": TelemetryEvent(event_id="e", service_name="s", crash_log="no files here")}))
+    assert "No local source" in out["code_context"]
+    assert "Mock Context" not in out["code_context"]
+
+
+def test_researcher_mock_context_only_in_dev(monkeypatch):
+    monkeypatch.setenv("AEGIS_ALLOW_MOCK_PATCH", "true")
+    class FakeVCS:
+        async def fetch_file_content(self, path): return None
+    monkeypatch.setattr(graph, "get_vcs_provider", lambda: FakeVCS())
+    monkeypatch.setattr(graph, "get_rag_engine", lambda: (_ for _ in ()).throw(RuntimeError("rag off")))
+    async def no_metrics(_): return None
+    monkeypatch.setattr(graph, "_gather_live_metrics", no_metrics)
+    out = asyncio.run(graph.researcher_node(
+        {"telemetry": TelemetryEvent(event_id="e", service_name="s", crash_log="no files")}))
     assert "Mock Context" in out["code_context"]
 
 
-def test_planner_node_passthrough():
-    state = {"telemetry": TELE}
-    assert graph.planner_node(state) is state
+def test_planner_triages_crash_to_code_patch():
+    assert graph.planner_node({"telemetry": TELE})["signal_kind"] == "crash"
+
+
+def test_planner_triages_metric_alert():
+    ev = TelemetryEvent(event_id="a", service_name="s", crash_log="alert",
+                        metadata={"signal_kind": "metric_alert"})
+    assert graph.planner_node({"telemetry": ev})["signal_kind"] == "metric_alert"
+
+
+# --- audit #8: executor produces ActionPlan for non-crash signals ---
+
+def test_executor_produces_action_plan_for_metric_alert(monkeypatch):
+    import json as _json
+    from aegis_sre.orchestrator.schemas import ActionPlan
+    plan_json = _json.dumps({
+        "steps": [{"tool": "k8s.cordon_node", "args": {"node": "n1"}, "description": "cordon"}],
+        "rollback_steps": [{"tool": "k8s.uncordon_node", "args": {"node": "n1"}}],
+        "blast_radius": "low",
+        "verification": {"query": "up", "comparator": "gte", "threshold": 1.0},
+        "root_cause_analysis": "node not ready", "explanation": "cordon it",
+    })
+    monkeypatch.setattr(graph, "chat_json", _chat(plan_json))
+    alert = TelemetryEvent(event_id="a1", service_name="svc", crash_log="NodeNotReady",
+                           metadata={"signal_kind": "metric_alert"})
+    out = asyncio.run(graph.executor_node({"telemetry": alert, "iteration_count": 0, "signal_kind": "metric_alert"}))
+    assert isinstance(out["current_patch"], ActionPlan)
+    assert out["current_patch"].steps[0].tool == "k8s.cordon_node"
+    assert out["current_patch"].dry_run is True  # safe by default
+
+
+def test_executor_still_produces_code_patch_for_crash(monkeypatch):
+    from aegis_sre.orchestrator.schemas import CodePatch
+    payload = '{"file_path":"a.py","target_content":"x","replacement_content":"y","root_cause_analysis":"r","explanation":"e"}'
+    monkeypatch.setattr(graph, "chat_json", _chat(payload))
+    out = asyncio.run(graph.executor_node({"telemetry": TELE, "iteration_count": 0, "signal_kind": "crash"}))
+    assert isinstance(out["current_patch"], CodePatch)
+
+
+def test_deploy_node_marks_resolved():
+    assert graph.deploy_node({"current_patch": None})["resolved"] is True

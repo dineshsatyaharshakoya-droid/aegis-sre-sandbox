@@ -9,6 +9,7 @@ from aegis_sre.config import get_settings
 from aegis_sre.orchestrator.llm import chat_json
 from aegis_sre.orchestrator.schemas import (
     TelemetryEvent, PatchProposal, SecurityReview, Remediation, CodePatch,
+    ActionPlan,
 )
 from aegis_sre.orchestrator.vcs_provider import get_vcs_provider
 from aegis_sre.orchestrator.validator import Validator
@@ -28,17 +29,29 @@ def get_rag_engine() -> RAGEngine:
 class GraphState(TypedDict):
     telemetry: TelemetryEvent
     code_context: str | None
-    # Holds any Remediation (CodePatch today, ActionPlan later). Kept named
-    # `current_patch` for back-compat with the API/approval/WS consumers.
+    # Holds any Remediation (CodePatch for crashes, ActionPlan for metric/log
+    # signals). Kept named `current_patch` for back-compat with API/approval/WS.
     current_patch: Remediation | None
     sandbox_status: str
     review: SecurityReview | None
     iteration_count: int
     resolved: bool
+    # Triage decision (set by planner): which remediation kind to produce.
+    signal_kind: str
+
+# Non-crash signal kinds route to an ActionPlan; crashes route to a CodePatch.
+_ACTION_SIGNALS = {"metric_alert", "log_anomaly", "generic"}
+
 
 def planner_node(state: GraphState) -> GraphState:
-    logger.info("analyzing_telemetry", node="planner", service_name=state['telemetry'].service_name)
-    return state
+    """Triage: decide whether this signal needs a code patch or an infra action,
+    based on the originating Signal kind (carried in telemetry metadata by the
+    Stone-1 adapter). This is what routes crash -> CodePatch vs alert -> ActionPlan."""
+    kind = (state["telemetry"].metadata or {}).get("signal_kind", "crash")
+    remediation = "action_plan" if kind in _ACTION_SIGNALS else "code_patch"
+    logger.info("triaging_signal", node="planner", service_name=state["telemetry"].service_name,
+                signal_kind=kind, remediation=remediation)
+    return {"signal_kind": kind}
 
 async def researcher_node(state: GraphState) -> GraphState:
     logger.info("hunting_context", node="researcher", source="vcs")
@@ -66,8 +79,17 @@ async def researcher_node(state: GraphState) -> GraphState:
             logger.error("error_reading_file", node="researcher", file_path=file_path, error=str(e))
             
     if not context_blocks:
-        logger.info("no_files_found_using_mock", node="researcher")
-        context_blocks.append("--- Mock Context ---\ndef process_payment():\n    # user_balance = db.get_user(user_id)[\"balance\"]\n    pass")
+        # Don't invent fiction in production: only inject demo code context when
+        # explicitly in dev/demo mode. Otherwise tell the model the source wasn't
+        # available so it doesn't patch a hallucinated file (audit #10).
+        if os.environ.get("AEGIS_ALLOW_MOCK_PATCH", "false").lower() == "true":
+            logger.info("no_files_found_using_mock_DEV_ONLY", node="researcher")
+            context_blocks.append("--- Mock Context ---\ndef process_payment():\n    # user_balance = db.get_user(user_id)[\"balance\"]\n    pass")
+        else:
+            logger.info("no_local_source_found", node="researcher")
+            context_blocks.append(
+                "--- No local source available for the referenced files. "
+                "Diagnose from the stack trace + live context; do not invent file contents. ---")
         
     # 2. Semantic Skills & Codebase Retrieval (Experimental SRA + AST RAG)
     try:
@@ -128,12 +150,29 @@ async def _gather_live_metrics(service_name: str) -> str | None:
     return "--- Live Metrics (Prometheus) ---\n" + "\n".join(blocks)
 
 async def executor_node(state: GraphState) -> GraphState:
+    """Produce a Remediation. Dispatches on the planner's triage: crash signals
+    get a CodePatch; metric/log signals get an ActionPlan (gated infra action)."""
     iteration = state.get("iteration_count", 0)
-    logger.info("generating_patch", node="executor", iteration=iteration + 1)
-    
-    # Executor/reasoning model (e.g. hermes3:8b on the local OpenAI-compatible endpoint).
-    executor_model = get_settings().executor_model
+    if state.get("signal_kind", "crash") in _ACTION_SIGNALS:
+        current = await _generate_action_plan(state, iteration)
+    else:
+        current = await _generate_code_patch(state, iteration)
+    return {"current_patch": current, "iteration_count": iteration + 1, "sandbox_status": "pending"}
 
+
+def _retry_feedback(state: GraphState, iteration: int) -> str:
+    """Feed the reviewer's rejection back on a retry so the model produces a
+    different remediation instead of repeating the rejected one."""
+    review = state.get("review")
+    if iteration > 0 and review is not None and not review.is_safe:
+        return (f"\n\n--- PREVIOUS ATTEMPT WAS REJECTED ---\nReviewer feedback: {review.feedback}\n"
+                "Produce a DIFFERENT remediation that addresses this feedback.")
+    return ""
+
+
+async def _generate_code_patch(state: GraphState, iteration: int):
+    logger.info("generating_patch", node="executor", iteration=iteration + 1)
+    executor_model = get_settings().executor_model
     system_prompt = (
         "You are an autonomous SRE. Your job is to fix code that causes crashes. "
         "Analyze the stack trace and the surrounding Code Context. Output a JSON object matching this schema exactly:\n"
@@ -142,62 +181,66 @@ async def executor_node(state: GraphState) -> GraphState:
     user_prompt = (
         f"Crash Log:\n{state['telemetry'].crash_log}\n\n"
         f"Code Context:\n{state.get('code_context', 'No context available.')}"
+        + _retry_feedback(state, iteration)
     )
-
-    # On a retry, feed the reviewer's rejection reason and the rejected patch
-    # back to the model. Without this the executor regenerated blind and tended
-    # to reproduce the same rejected patch, burning every retry on identical
-    # output before the safety policy aborted.
-    previous_review = state.get("review")
-    previous_patch = state.get("current_patch")
-    if iteration > 0 and previous_review is not None and not previous_review.is_safe:
-        rejected = (
-            f"\n\n--- PREVIOUS ATTEMPT WAS REJECTED ---\n"
-            f"Reviewer feedback: {previous_review.feedback}\n"
-        )
-        if previous_patch is not None:
-            rejected += (
-                f"Rejected replacement for {previous_patch.file_path}:\n"
-                f"{previous_patch.replacement_content}\n"
-            )
-        rejected += "Produce a DIFFERENT patch that addresses this feedback."
-        user_prompt += rejected
-
     try:
         content = await chat_json(executor_model, system_prompt, user_prompt)
-        patch_data = json.loads(content)
-        current_patch = PatchProposal(**patch_data)
+        current_patch = PatchProposal(**json.loads(content))
         metrics.patches_generated.inc()
         logger.info("patch_generated", node="executor", model=executor_model)
-    except json.JSONDecodeError as e:
-        logger.error("invalid_json", node="executor", error=str(e))
-        current_patch = None
-    except ValidationError as e:
-        logger.error("schema_validation_failed", node="executor", error=str(e))
-        current_patch = None
-    except Exception as e:
-        # FAIL-CLOSED: an infrastructure error (network/timeout/rate-limit) must
-        # NOT fabricate a patch. Returning a hardcoded mock here previously let a
-        # fake `main.py` null-check flow downstream and potentially be deployed.
-        # Only emit the demo patch when explicitly running in dev/demo mode.
+        return current_patch
+    except (json.JSONDecodeError, ValidationError) as e:
+        logger.error("executor_bad_output", node="executor", error=str(e))
+        return None
+    except Exception as e:  # noqa: BLE001 - fail closed, never fabricate a patch
         if os.environ.get("AEGIS_ALLOW_MOCK_PATCH", "false").lower() == "true":
             logger.warning("network_error_fallback_mock_DEV_ONLY", node="executor", error=str(e))
-            current_patch = PatchProposal(
-                file_path="main.py",
-                target_content="def process_data(data):\n    pass",
+            return PatchProposal(
+                file_path="main.py", target_content="def process_data(data):\n    pass",
                 replacement_content="def process_data(data):\n    if not data:\n        return None\n    pass",
-                root_cause_analysis="The `data` object was None at line 42 when subscripting.",
-                explanation="Added null check to prevent NoneType exception."
-            )
-        else:
-            logger.error("executor_llm_call_failed_no_patch", node="executor", error=str(e))
-            current_patch = None
-    
-    return {
-        "current_patch": current_patch,
-        "iteration_count": iteration + 1,
-        "sandbox_status": "pending"
-    }
+                root_cause_analysis="`data` was None at line 42 when subscripting.",
+                explanation="Added null check to prevent NoneType exception.")
+        logger.error("executor_llm_call_failed_no_patch", node="executor", error=str(e))
+        return None
+
+
+async def _generate_action_plan(state: GraphState, iteration: int):
+    """Generate an ActionPlan for a non-crash signal. Allowed tools come from the
+    registry's ACT tools so the model can only propose gateable actions; the plan
+    is dry_run=True by default (policy + approval gate live execution)."""
+    logger.info("generating_action_plan", node="executor", iteration=iteration + 1)
+    from aegis_sre.integrations.tool_registry import get_tool_registry
+
+    executor_model = get_settings().executor_model
+    act_tools = [t.name for t in get_tool_registry().gated_tools()]
+    system_prompt = (
+        "You are an autonomous SRE responding to a live infrastructure alert. Propose a "
+        "remediation as a JSON ActionPlan with EXACTLY this schema:\n"
+        "{'steps': [{'tool': 'string', 'args': {}, 'description': 'string'}], "
+        "'rollback_steps': [{'tool': 'string', 'args': {}, 'description': 'string'}], "
+        "'blast_radius': 'low'|'medium'|'high', "
+        "'verification': {'query': '<PromQL>', 'comparator': 'lt'|'lte'|'gt'|'gte'|'eq', 'threshold': <number>}, "
+        "'root_cause_analysis': 'string', 'explanation': 'string'}\n"
+        f"Only use tools from this allowed list: {act_tools or ['k8s.cordon_node','k8s.scale_deployment','job.requeue']}."
+    )
+    user_prompt = (
+        f"Alert / Signal:\n{state['telemetry'].crash_log}\n\n"
+        f"Live Context:\n{state.get('code_context', 'No context available.')}"
+        + _retry_feedback(state, iteration)
+    )
+    try:
+        content = await chat_json(executor_model, system_prompt, user_prompt)
+        plan = ActionPlan(**json.loads(content))
+        metrics.patches_generated.inc()
+        logger.info("action_plan_generated", node="executor", model=executor_model,
+                    steps=len(plan.steps), blast_radius=plan.blast_radius.value)
+        return plan
+    except (json.JSONDecodeError, ValidationError) as e:
+        logger.error("executor_bad_action_plan", node="executor", error=str(e))
+        return None
+    except Exception as e:  # noqa: BLE001 - fail closed
+        logger.error("executor_action_plan_failed", node="executor", error=str(e))
+        return None
 
 async def sandbox_node(state: GraphState) -> GraphState:
     logger.info("validating_remediation", node="sandbox")
@@ -248,12 +291,19 @@ async def reviewer_node(state: GraphState) -> GraphState:
     patch = state.get("current_patch")
     if not patch:
         return state
-        
+
+    # Describe the remediation polymorphically (CodePatch vs ActionPlan).
+    if isinstance(patch, CodePatch):
+        change = (f"Proposed Patch for {patch.file_path}:\n"
+                  f"Replace:\n{patch.target_content}\nWith:\n{patch.replacement_content}")
+    elif isinstance(patch, ActionPlan):
+        steps = "\n".join(f"  - {s.tool}({s.args})" for s in patch.steps)
+        change = (f"Proposed ActionPlan (blast_radius={patch.blast_radius.value}):\n{steps}\n"
+                  f"Rollback steps: {len(patch.rollback_steps)}")
+    else:
+        change = f"Proposed remediation: {type(patch).__name__}"
     user_prompt = (
-        f"Original Crash Log:\n{state['telemetry'].crash_log}\n\n"
-        f"Proposed Patch for {patch.file_path}:\n"
-        f"Replace:\n{patch.target_content}\n"
-        f"With:\n{patch.replacement_content}\n"
+        f"Original Signal:\n{state['telemetry'].crash_log}\n\n{change}\n"
         f"Explanation: {patch.explanation}"
     )
     
@@ -286,40 +336,51 @@ async def reviewer_node(state: GraphState) -> GraphState:
 def should_deploy(state: GraphState) -> str:
     review = state.get("review")
     sandbox_status = state.get("sandbox_status")
-    
+
     if review and review.is_safe and sandbox_status == "success":
         return "deploy"
-        
+
     should_abort, reason = safety_policy.should_abort(state)
     if should_abort:
         logger.warning("graph_execution_aborted", reason=reason)
         return "fail"
-        
+
     return "retry"
+
+
+def deploy_node(state: GraphState) -> GraphState:
+    """Terminal node for a validated, approved-ready remediation. Marks the
+    incident resolved (so `resolved` is no longer write-only dead state)."""
+    patch = state.get("current_patch")
+    logger.info("remediation_ready_for_deploy", node="deploy",
+                kind=type(patch).__name__ if patch else None)
+    return {"resolved": True}
 
 def build_graph(checkpointer=None):
     workflow = StateGraph(GraphState)
-    
+
     workflow.add_node("planner", planner_node)
     workflow.add_node("researcher", researcher_node)
     workflow.add_node("executor", executor_node)
     workflow.add_node("sandbox", sandbox_node)
     workflow.add_node("reviewer", reviewer_node)
-    
+    workflow.add_node("deploy", deploy_node)
+
     workflow.set_entry_point("planner")
     workflow.add_edge("planner", "researcher")
     workflow.add_edge("researcher", "executor")
     workflow.add_edge("executor", "sandbox")
     workflow.add_edge("sandbox", "reviewer")
-    
+
     workflow.add_conditional_edges(
         "reviewer",
         should_deploy,
         {
-            "deploy": END,
+            "deploy": "deploy",
             "fail": END,
             "retry": "executor"
         }
     )
-    
+    workflow.add_edge("deploy", END)
+
     return workflow.compile(checkpointer=checkpointer)
