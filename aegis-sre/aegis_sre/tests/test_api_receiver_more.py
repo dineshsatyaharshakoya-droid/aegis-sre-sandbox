@@ -129,3 +129,20 @@ def test_incidents_gated_when_token_set(monkeypatch):
     assert client.get("/incidents").status_code == 401                      # no token
     assert client.get("/incidents?token=s3cret").status_code == 200         # query token
     assert client.get("/incidents", headers={"X-Aegis-Token": "s3cret"}).status_code == 200
+
+
+# --- F1: ActionPlan must flow through trigger_repair_loop without crashing ---
+
+def test_repair_loop_handles_action_plan_without_crashing(monkeypatch):
+    from aegis_sre.orchestrator.schemas import ActionPlan, ActionStep, BlastRadius
+    plan = ActionPlan(steps=[ActionStep(tool="k8s.cordon_node", args={"node": "n1"})],
+                      blast_radius=BlastRadius.LOW, root_cause_analysis="rc", explanation="why")
+    tele = TelemetryEvent(event_id="e-actionplan", service_name="svc", crash_log="NodeNotReady")
+    mgr, alerts = _wire(monkeypatch, [{"executor": {"current_patch": plan, "sandbox_status": "success"}}])
+    before = ar.approval_registry.pending_count()
+    asyncio.run(ar.trigger_repair_loop(tele))  # must NOT raise (was AttributeError)
+    ready = [e for e in mgr.events if e["type"] == "patch_ready"]
+    assert ready and ready[0]["kind"] == "ActionPlan"
+    assert ready[0]["file"] is None and ready[0]["steps"] == ["k8s.cordon_node"]
+    assert ar.approval_registry.pending_count() == before + 1
+    assert ("acknowledge", "e-actionplan") in alerts

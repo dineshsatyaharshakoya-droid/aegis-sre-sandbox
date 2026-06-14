@@ -3,7 +3,7 @@ import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Header, Request, WebSocket, WebSocketDisconnect
 from typing import List, Dict, Any, Optional
-from aegis_sre.orchestrator.schemas import TelemetryEvent
+from aegis_sre.orchestrator.schemas import TelemetryEvent, CodePatch, ActionPlan
 from aegis_sre.telemetry.logger import logger
 from aegis_sre.telemetry.auth import verify_token, verify_sentry_signature, SlidingWindowRateLimiter
 from aegis_sre.telemetry import metrics
@@ -280,22 +280,34 @@ async def trigger_repair_loop(telemetry: TelemetryEvent):
         # In a real async production environment, we'd log the final patch ID
         patch = final_state.get('current_patch')
         if patch:
-            logger.info("Successfully generated patch", service_name=telemetry.service_name, file_path=patch.file_path)
-            # Hold the patch pending human approval so /ws approve_patch can open
-            # a real PR for it (the human gate is no longer a no-op).
+            kind = type(patch).__name__
+            logger.info("Successfully generated remediation", service_name=telemetry.service_name, kind=kind)
+            # Hold the remediation pending human approval so /ws approve_patch can
+            # ship it (PR for a CodePatch, gated execution for an ActionPlan).
             approval_registry.register(telemetry.event_id, patch, telemetry)
-            await manager.broadcast({
+            # Build the patch_ready frame polymorphically — an ActionPlan has no
+            # file_path/replacement_content (F1: this previously crashed the whole
+            # alert path with AttributeError).
+            msg = {
                 "incident_id": telemetry.event_id,
                 "type": "patch_ready",
                 "service": telemetry.service_name,
-                "file": patch.file_path,
+                "kind": kind,
                 "root_cause_analysis": patch.root_cause_analysis,
                 "explanation": patch.explanation,
-                "diff": patch.replacement_content
-            })
-            # A fix is proposed and awaiting human approval -> acknowledge.
-            await _alert("acknowledge", telemetry.event_id,
-                         note=f"Patch proposed for {patch.file_path}; awaiting approval.")
+            }
+            if isinstance(patch, CodePatch):
+                msg["file"] = patch.file_path
+                msg["diff"] = patch.replacement_content
+                ack_note = f"Patch proposed for {patch.file_path}; awaiting approval."
+            else:  # ActionPlan
+                msg["file"] = None
+                msg["steps"] = [s.tool for s in patch.steps]
+                msg["blast_radius"] = patch.blast_radius.value
+                ack_note = f"ActionPlan ({len(patch.steps)} steps) proposed; awaiting approval."
+            await manager.broadcast(msg)
+            # A remediation is proposed and awaiting human approval -> acknowledge.
+            await _alert("acknowledge", telemetry.event_id, note=ack_note)
         else:
             logger.warning("Orchestrator completed but no patch was generated", service_name=telemetry.service_name)
         # Note: durable status ('completed'/'failed') is owned by ConsumerRunner,
@@ -531,8 +543,23 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Fix shipped (PR opened) -> resolve the incident alert.
                     await _alert("resolve", incident_id,
                                  note=f"Fix PR opened for {result['file']}: {result['pr_url']}")
+                elif result["status"] in ("executed", "rolled_back"):
+                    # ActionPlan terminal states (F3): update the store + alert +
+                    # dashboard, which previously only happened for CodePatch PRs.
+                    resolved = result["status"] == "executed" and result.get("resolved")
+                    if incident_service is not None:
+                        await incident_service.store.mark_event_status(
+                            incident_id, "deployed" if resolved else "failed")
+                    await manager.broadcast({
+                        "type": "patch_deployed" if resolved else "patch_rejected",
+                        "incident_id": incident_id, "kind": "action_plan",
+                        "mode": result.get("mode"), "rolled_back": result.get("rolled_back"),
+                    })
+                    if resolved:
+                        await _alert("resolve", incident_id, note="ActionPlan executed and verified.")
+                    await websocket.send_json({"type": "approval_result", **result})
                 else:
-                    # not_found / already_approved / error -> tell the approver only.
+                    # not_found / already_approved / error / blocked -> tell the approver.
                     await websocket.send_json({"type": "approval_result", **result})
 
             elif data.get("action") == "reject_patch":

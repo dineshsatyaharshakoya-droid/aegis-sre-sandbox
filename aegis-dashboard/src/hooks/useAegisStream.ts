@@ -14,13 +14,21 @@ export const useAegisStream = (url: string) => {
         if (res.ok) {
           const data = await res.json();
           const historyIncidents: Record<string, Incident> = {};
+          // Map stored statuses to UI statuses, preserving terminal states (F4:
+          // previously every non-'completed' status — deployed/rejected/failed —
+          // collapsed to 'investigating' on reload).
+          const STATUS_MAP: Record<string, Incident['status']> = {
+            deployed: 'deployed', rejected: 'rejected', failed: 'error',
+            completed: 'deployed', pending: 'investigating',
+          };
           data.incidents.forEach((inc: any) => {
+            const done = ['completed', 'deployed', 'rejected', 'failed'].includes(inc.status);
             historyIncidents[inc.id] = {
               id: inc.id,
               service: inc.service,
               time: new Date(inc.created_at * 1000).toLocaleTimeString(),
-              status: inc.status === 'completed' ? 'deployed' : 'investigating',
-              nodes_executed: inc.status === 'completed' ? ['planner', 'researcher', 'executor', 'sandbox', 'reviewer'] : [],
+              status: STATUS_MAP[inc.status] || 'investigating',
+              nodes_executed: done ? ['planner', 'researcher', 'executor', 'sandbox', 'reviewer'] : [],
               crash_log: inc.crash_log
             };
           });
