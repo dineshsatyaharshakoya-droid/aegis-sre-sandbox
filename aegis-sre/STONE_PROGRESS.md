@@ -9,7 +9,7 @@ each increment relaxes the two market-gating limiters and moves us toward the
 - **#1 Trigger modality** — crash/stack-trace → must become metric/alert/stream.
 - **#2 Remediation modality** — code patch/PR → must become live actions.
 
-_Last updated: through cycle D2. Tests: 125 passing. Latest fix-rate: 0.50 (2-case sample)._
+_Last updated: through cycle D2 (+ coverage pass). Tests: 131 passing. Coverage: 78% overall; decision/business-logic core 90–100% (schemas, validator, policy, executor, approvals, adapters). Gaps are external-I/O boundaries (LLM, RAG, Redis/Postgres live branches, GitHub API, async glue) validated via live smoke runs. Latest fix-rate: 0.50 (2-case sample)._
 
 ---
 
