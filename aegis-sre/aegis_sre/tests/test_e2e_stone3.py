@@ -79,7 +79,7 @@ def test_e2e_alert_to_verified_remediation():
 
     # 2. diagnosis -> ActionPlan held for human approval
     reg = ApprovalRegistry()
-    reg.register(signal.signal_id, _diagnosed_plan(), signal.to_telemetry())
+    asyncio.run(reg.register(signal.signal_id, _diagnosed_plan(), signal.to_telemetry()))
 
     # 3. human approves -> gated live execute -> verify (healthy) -> resolved
     runner = RemediationRunner(executor=_live_executor(log), verifier=Verifier(client=_FakeProm(1.0)))
@@ -95,7 +95,7 @@ def test_e2e_forced_failure_triggers_rollback():
     log = []
     [signal] = parse_alertmanager(_alert("fp2"))
     reg = ApprovalRegistry()
-    reg.register(signal.signal_id, _diagnosed_plan(), signal.to_telemetry())
+    asyncio.run(reg.register(signal.signal_id, _diagnosed_plan(), signal.to_telemetry()))
 
     # Metric stays unhealthy (up=0) -> verification fails -> auto rollback.
     runner = RemediationRunner(executor=_live_executor(log), verifier=Verifier(client=_FakeProm(0.0)))
@@ -113,7 +113,7 @@ def test_e2e_default_policy_is_dry_run_safe():
     log = []
     [signal] = parse_alertmanager(_alert("fp3"))
     reg = ApprovalRegistry()
-    reg.register(signal.signal_id, _diagnosed_plan(), signal.to_telemetry())
+    asyncio.run(reg.register(signal.signal_id, _diagnosed_plan(), signal.to_telemetry()))
 
     runner = RemediationRunner(executor=ActionExecutor(registry=_registry(log)),  # default Policy()
                                verifier=Verifier(client=_FakeProm(1.0)))
@@ -128,7 +128,7 @@ def test_e2e_idempotent_reapproval():
     log = []
     [signal] = parse_alertmanager(_alert("fp4"))
     reg = ApprovalRegistry()
-    reg.register(signal.signal_id, _diagnosed_plan(), signal.to_telemetry())
+    asyncio.run(reg.register(signal.signal_id, _diagnosed_plan(), signal.to_telemetry()))
     runner = RemediationRunner(executor=_live_executor(log), verifier=Verifier(client=_FakeProm(1.0)))
     asyncio.run(reg.approve(signal.signal_id, None, runner=runner))
     again = asyncio.run(reg.approve(signal.signal_id, None, runner=runner))

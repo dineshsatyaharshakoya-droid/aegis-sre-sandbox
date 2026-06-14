@@ -40,9 +40,14 @@ def make_processor(checkpointer, pubsub=None):
     """
     from aegis_sre.orchestrator.graph import build_graph
     from aegis_sre.infra.pubsub import NoOpPubSub
+    from aegis_sre.core.approvals import build_approval_registry
 
     graph_app = build_graph(checkpointer=checkpointer)
     pubsub = pubsub or NoOpPubSub()
+    # Register produced remediations into the SHARED (Redis) approval registry so
+    # a separate API replica can approve them — without this, cloud approvals
+    # always 404'd because the registry lived only in the API process (F2/A8).
+    approvals = build_approval_registry(get_settings())
 
     async def processor(event: TelemetryEvent) -> None:
         initial_state = {
@@ -65,9 +70,12 @@ def make_processor(checkpointer, pubsub=None):
                                       "node": node_name})
         patch = final_state.get("current_patch")
         if patch is not None:
+            # Hold it for human approval in shared state (so any API replica can
+            # approve), then announce patch_ready to WS clients via pub/sub.
+            await approvals.register(event.event_id, patch, event)
             await pubsub.publish({
                 "incident_id": event.event_id, "type": "patch_ready",
-                "service": event.service_name,
+                "service": event.service_name, "kind": type(patch).__name__,
                 "file": getattr(patch, "file_path", None),
                 "root_cause_analysis": patch.root_cause_analysis,
                 "explanation": patch.explanation,

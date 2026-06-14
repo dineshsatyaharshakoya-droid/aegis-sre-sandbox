@@ -47,9 +47,16 @@ def wire_inmemory_incident_service(tmp_path):
         store=store, broker=InProcessBroker(), cache=InMemoryCache(), settings=settings
     )
 
-    previous = api_receiver.incident_service
+    # Force an in-memory approval registry too, so tests don't hit the .env's
+    # Redis backend (which would add cross-loop affinity + state pollution).
+    from aegis_sre.core.approvals import ApprovalRegistry, InMemoryPendingStore
+
+    prev_service = api_receiver.incident_service
+    prev_registry = api_receiver.approval_registry
     api_receiver.incident_service = service
+    api_receiver.approval_registry = ApprovalRegistry(InMemoryPendingStore())
     try:
         yield service
     finally:
-        api_receiver.incident_service = previous
+        api_receiver.incident_service = prev_service
+        api_receiver.approval_registry = prev_registry

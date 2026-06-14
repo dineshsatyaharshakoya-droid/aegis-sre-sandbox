@@ -9,7 +9,7 @@ from aegis_sre.telemetry.auth import verify_token, verify_sentry_signature, Slid
 from aegis_sre.telemetry import metrics
 from aegis_sre.config import get_settings
 from aegis_sre.core.service import IncidentService, ConsumerRunner
-from aegis_sre.core.approvals import ApprovalRegistry
+from aegis_sre.core.approvals import build_approval_registry
 from aegis_sre.infra.factory import build_store, build_broker, build_cache
 from aegis_sre.infra.broker import InProcessBroker
 from aegis_sre.orchestrator.safety import safety_policy
@@ -23,7 +23,9 @@ from aegis_sre.orchestrator.safety import safety_policy
 settings = get_settings()
 _rate_limiter = SlidingWindowRateLimiter(settings.rate_limit_rpm)
 # Holds generated patches awaiting human approval (incident_id -> patch).
-approval_registry = ApprovalRegistry()
+# Shared on the cloud tier (Redis) so worker-registered remediations are
+# approvable from any API replica; in-memory on-prem (A8 / F2).
+approval_registry = build_approval_registry(settings)
 
 
 def _client_key(request: Request) -> str:
@@ -284,7 +286,7 @@ async def trigger_repair_loop(telemetry: TelemetryEvent):
             logger.info("Successfully generated remediation", service_name=telemetry.service_name, kind=kind)
             # Hold the remediation pending human approval so /ws approve_patch can
             # ship it (PR for a CodePatch, gated execution for an ActionPlan).
-            approval_registry.register(telemetry.event_id, patch, telemetry)
+            await approval_registry.register(telemetry.event_id, patch, telemetry)
             # Build the patch_ready frame polymorphically — an ActionPlan has no
             # file_path/replacement_content (F1: this previously crashed the whole
             # alert path with AttributeError).
@@ -567,7 +569,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not incident_id:
                     await websocket.send_json({"type": "error", "message": "reject_patch requires incident_id"})
                     continue
-                rejected = approval_registry.reject(incident_id)
+                rejected = await approval_registry.reject(incident_id)
                 logger.info("human_rejected_patch", incident_id=incident_id, rejected=rejected)
                 if incident_service is not None and rejected:
                     await incident_service.store.mark_event_status(incident_id, "rejected")

@@ -17,7 +17,7 @@ _Last updated: atomic audit remediated — all Medium issues closed (security: /
 
 | Stone | Goal | Status | Limiter moved |
 |-------|------|--------|---------------|
-| 0 — foundation | see/measure/operate the existing product | 🟩🟩🟩🟨 ~90% | recover-guard + CI gate added |
+| 0 — foundation | see/measure/operate the existing product | 🟩🟩🟩🟨 ~92% | recover-guard + CI gate + A8 Redis approval registry |
 | 1 — Signal/Remediation | model non-crash triggers + non-code fixes | ✅ done | #1 & #2 (model) |
 | 2 — MCP eyes | alert-triggered + live-context diagnosis | ✅ **done** | **#1 (live) — metrics+logs+registry+adapters** |
 | 3 — MCP hands (sellable) | gated live execution | ✅ **done** | **#2 (live) — full loop, e2e signed off** |

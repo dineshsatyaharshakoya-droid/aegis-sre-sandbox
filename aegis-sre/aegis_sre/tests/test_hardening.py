@@ -480,7 +480,7 @@ class _FakeVCS:
 def test_approval_opens_pr_once_and_is_idempotent():
     async def go():
         reg = ApprovalRegistry()
-        reg.register("inc1", _patch(), _event("inc1"))
+        await reg.register("inc1", _patch(), _event("inc1"))
         vcs = _FakeVCS()
 
         r1 = await reg.approve("inc1", vcs)
@@ -502,10 +502,10 @@ def test_approval_unknown_incident():
 def test_approval_vcs_failure_restores_for_retry():
     async def go():
         reg = ApprovalRegistry()
-        reg.register("inc2", _patch(), _event("inc2"))
+        await reg.register("inc2", _patch(), _event("inc2"))
         # First attempt: VCS down -> error, entry preserved.
         r1 = await reg.approve("inc2", _FakeVCS(fail=True))
-        assert r1["status"] == "error" and reg.pending_count() == 1
+        assert r1["status"] == "error" and await reg.pending_count() == 1
         # Retry with a healthy VCS -> deployed.
         r2 = await reg.approve("inc2", _FakeVCS())
         assert r2["status"] == "deployed"
@@ -515,8 +515,8 @@ def test_approval_vcs_failure_restores_for_retry():
 def test_approval_registry_is_bounded():
     reg = ApprovalRegistry(max_size=3)
     for i in range(10):
-        reg.register(f"inc{i}", _patch(), _event(f"inc{i}"))
-    assert reg.pending_count() == 3
+        asyncio.run(reg.register(f"inc{i}", _patch(), _event(f"inc{i}")))
+    assert asyncio.run(reg.pending_count()) == 3
 
 
 # --------------------------------------------------------------------------- #

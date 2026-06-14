@@ -78,3 +78,32 @@ def test_postgres_store_roundtrip_live():
         return eid, recent
     eid, recent = asyncio.run(go())
     assert any(r["id"] == eid and r["status"] == "completed" for r in recent)
+
+
+# --- A8/F2: cross-process approval via shared Redis registry ---
+
+@redis_up
+def test_redis_approval_registry_cross_process_live():
+    """Worker registers in one registry; a SEPARATE API registry (shared Redis)
+    can approve it — previously impossible (in-memory per-process)."""
+    from aegis_sre.core.approvals import ApprovalRegistry, RedisPendingStore
+    from aegis_sre.orchestrator.schemas import CodePatch, TelemetryEvent
+
+    class _VCS:
+        async def create_pull_request(self, patch, telemetry):
+            return "https://github.com/o/r/pull/42"
+
+    async def go():
+        iid = f"xproc-{time.time()}"
+        worker_reg = ApprovalRegistry(RedisPendingStore(REDIS_URL))
+        api_reg = ApprovalRegistry(RedisPendingStore(REDIS_URL))
+        patch = CodePatch(file_path="a.py", target_content="x", replacement_content="y",
+                          root_cause_analysis="rc", explanation="e")
+        await worker_reg.register(iid, patch, TelemetryEvent(event_id=iid, service_name="s", crash_log="c"))
+        r1 = await api_reg.approve(iid, _VCS())          # different instance, shared Redis
+        r2 = await api_reg.approve(iid, _VCS())          # idempotent
+        return r1, r2
+
+    r1, r2 = asyncio.run(go())
+    assert r1["status"] == "deployed" and r1["pr_url"].endswith("/pull/42")
+    assert r2["status"] == "already_approved"

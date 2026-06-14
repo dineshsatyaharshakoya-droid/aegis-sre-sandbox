@@ -88,19 +88,19 @@ def test_repair_loop_patch_ready_registers_and_acknowledges(monkeypatch):
     patch = CodePatch(file_path="a.py", target_content="x", replacement_content="y",
                       root_cause_analysis="rc", explanation="why")
     mgr, alerts = _wire(monkeypatch, [{"executor": {"current_patch": patch, "sandbox_status": "success"}}])
-    before = ar.approval_registry.pending_count()
+    before = asyncio.run(ar.approval_registry.pending_count())
     asyncio.run(ar.trigger_repair_loop(TELE))
     types = [e["type"] for e in mgr.events]
     assert "telemetry_received" in types and "patch_ready" in types
     assert ("trigger", "e1") in alerts and ("acknowledge", "e1") in alerts
-    assert ar.approval_registry.pending_count() == before + 1
+    assert asyncio.run(ar.approval_registry.pending_count()) == before + 1
 
 
 def test_repair_loop_no_patch_does_not_register(monkeypatch):
     mgr, alerts = _wire(monkeypatch, [{"executor": {"current_patch": None}}])
-    before = ar.approval_registry.pending_count()
+    before = asyncio.run(ar.approval_registry.pending_count())
     asyncio.run(ar.trigger_repair_loop(TELE))
-    assert ar.approval_registry.pending_count() == before
+    assert asyncio.run(ar.approval_registry.pending_count()) == before
     assert ("acknowledge", "e1") not in alerts
 
 
@@ -139,10 +139,10 @@ def test_repair_loop_handles_action_plan_without_crashing(monkeypatch):
                       blast_radius=BlastRadius.LOW, root_cause_analysis="rc", explanation="why")
     tele = TelemetryEvent(event_id="e-actionplan", service_name="svc", crash_log="NodeNotReady")
     mgr, alerts = _wire(monkeypatch, [{"executor": {"current_patch": plan, "sandbox_status": "success"}}])
-    before = ar.approval_registry.pending_count()
+    before = asyncio.run(ar.approval_registry.pending_count())
     asyncio.run(ar.trigger_repair_loop(tele))  # must NOT raise (was AttributeError)
     ready = [e for e in mgr.events if e["type"] == "patch_ready"]
     assert ready and ready[0]["kind"] == "ActionPlan"
     assert ready[0]["file"] is None and ready[0]["steps"] == ["k8s.cordon_node"]
-    assert ar.approval_registry.pending_count() == before + 1
+    assert asyncio.run(ar.approval_registry.pending_count()) == before + 1
     assert ("acknowledge", "e-actionplan") in alerts
