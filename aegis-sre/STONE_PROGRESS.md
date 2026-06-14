@@ -9,7 +9,7 @@ each increment relaxes the two market-gating limiters and moves us toward the
 - **#1 Trigger modality** — crash/stack-trace → must become metric/alert/stream.
 - **#2 Remediation modality** — code patch/PR → must become live actions.
 
-_Last updated: through cycle C4. Tests: 105 passing. Latest fix-rate: 0.50 (2-case sample)._
+_Last updated: through cycle D1. Tests: 116 passing. Latest fix-rate: 0.50 (2-case sample)._
 
 ---
 
@@ -20,7 +20,7 @@ _Last updated: through cycle C4. Tests: 105 passing. Latest fix-rate: 0.50 (2-ca
 | 0 — foundation | see/measure/operate the existing product | 🟩🟩🟩⬜ ~80% | — |
 | 1 — Signal/Remediation | model non-crash triggers + non-code fixes | ✅ done | #1 & #2 (model) |
 | 2 — MCP eyes | alert-triggered + live-context diagnosis | 🟩🟩🟩⬜ ~70% | **#1 (live)** |
-| 3 — MCP hands (sellable) | gated live execution | ⬜ 0% | #2 (live) — next frontier |
+| 3 — MCP hands (sellable) | gated live execution | 🟩⬜⬜⬜ ~15% | **#2 (live) — started: policy gate** |
 | 4 — productionize | multi-tenant, secrets, CI gate | ⬜ 0% | — |
 | 5 — HPC/GPU wedge | premium vertical | ⬜ 0% | — |
 
@@ -30,7 +30,8 @@ _Last updated: through cycle C4. Tests: 105 passing. Latest fix-rate: 0.50 (2-ca
 
 | Cycle | What | Bigger-picture contribution | Commit |
 |-------|------|-----------------------------|--------|
-| C4 | Alertmanager webhook → `Signal(metric_alert)` → swarm | **Relaxes limiter #1 live**: a metric alert (not just a crash) now triggers the repair loop. Completes Stone 2's trigger half. | `pending` |
+| D1 | `policy.py` action gate (dry-run default, blast caps, allow/deny, audit) | **Starts limiter #2 live (safely)**: the gate the sellable product rests on; gates `registry` act-tools by risk + blast radius. | `pending` |
+| C4 | Alertmanager webhook → `Signal(metric_alert)` → swarm | **Relaxes limiter #1 live**: a metric alert (not just a crash) now triggers the repair loop. Completes Stone 2's trigger half. | `81d370c` |
 | C1 | Risk-classed tool registry (`read`/`notify`/`act`) | Keystone for the sellable Stone 3: its policy engine gates `act` tools by risk. Retrofits ad-hoc tools. | `9f08744` |
 | B7 | Regression sweep | Fix-rate 0.50 unchanged — Stone 1 added zero quality regression. | verify |
 | B6 | Polymorphic approvals | Approve a `CodePatch` (PR) **or** an `ActionPlan` (gated) — limiter #2 in the approval path. | `875ef2d` |
@@ -57,8 +58,9 @@ _Last updated: through cycle C4. Tests: 105 passing. Latest fix-rate: 0.50 (2-ca
 
 ## Next up
 
-**C6 / Stone 3 entry.** With triggers (C4) and the risk registry (C1) in place,
-the critical-path frontier is **Stone 3 / D1 — `policy.py`**: gate
-`registry.gated_tools()` by risk + blast radius. That's where limiter #2 goes
-*live* and the sellable product takes shape. (Per SCALE_PLAN: the policy +
-verification loop "must lead, not lag" the execution.)
+**Stone 3 / D2 — gated `act` execution path.** The policy (D1) now decides; next
+is wiring an `act`-tool execution path that only runs when
+`policy.evaluate(...).permits_live_execution` is true, then D3 (ActionPlan runs in
+the deploy path), D4 (post-action verification: re-read the triggering metric),
+D5 (rollback on regression). Per SCALE_PLAN, verification + rollback are what keep
+autonomy safe — they lead, not lag.
