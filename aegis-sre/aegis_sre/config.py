@@ -97,6 +97,10 @@ class Settings:
     # Empty => no token gate (dev/on-prem convenience); REQUIRED on the cloud
     # profile (startup fails closed if missing).
     webhook_token: str = field(default_factory=lambda: _env("AEGIS_WEBHOOK_TOKEN", ""))
+    # Per-identity API keys for RBAC + attribution (Batch 3):
+    #   AEGIS_API_KEYS="k1:alice:approver,k2:ci-bot:ingest,k3:admin:admin"
+    # Empty => fall back to the single webhook_token (admin) / open dev.
+    api_keys: str = field(default_factory=lambda: _env("AEGIS_API_KEYS", ""))
     # Sentry client secret for HMAC verification of /webhook/sentry. Empty => no
     # signature check (dev); set in production.
     sentry_secret: str = field(default_factory=lambda: _env("AEGIS_SENTRY_SECRET", ""))

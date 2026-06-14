@@ -125,7 +125,9 @@ def test_incidents_open_when_no_token():
 
 
 def test_incidents_gated_when_token_set(monkeypatch):
-    monkeypatch.setattr(ar.settings, "webhook_token", "s3cret")
+    # Identity registry is built at startup; swap it (config is fixed at startup).
+    from aegis_sre.telemetry.auth import IdentityRegistry
+    monkeypatch.setattr(ar, "_identity", IdentityRegistry({}, "s3cret"))
     assert client.get("/incidents").status_code == 401                      # no token
     assert client.get("/incidents?token=s3cret").status_code == 200         # query token
     assert client.get("/incidents", headers={"X-Aegis-Token": "s3cret"}).status_code == 200

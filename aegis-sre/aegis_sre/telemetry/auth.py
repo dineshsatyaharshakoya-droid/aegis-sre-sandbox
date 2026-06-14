@@ -126,3 +126,62 @@ def build_rate_limiter(settings):
     if settings.cache_backend == "redis" or settings.is_cloud:
         return RedisRateLimiter(settings.redis_url, settings.rate_limit_rpm)
     return SlidingWindowRateLimiter(settings.rate_limit_rpm)
+
+
+# --- Identity + RBAC (red-team Batch 3 / S1) ---------------------------------
+# Replaces the single anonymous shared token with per-identity API keys carrying
+# a role, so actions are authorized AND attributable. Back-compat: no keys + no
+# token => open (dev); a legacy `webhook_token` acts as a single admin key.
+from dataclasses import dataclass  # noqa: E402
+
+ROLE_RANK = {"ingest": 1, "approver": 2, "admin": 3}
+
+
+@dataclass(frozen=True)
+class Identity:
+    name: str
+    role: str
+
+
+class IdentityRegistry:
+    def __init__(self, keys: dict, legacy_token: str = ""):
+        self._keys = dict(keys)          # token -> Identity
+        self._legacy = legacy_token or ""
+
+    @property
+    def auth_configured(self) -> bool:
+        return bool(self._keys or self._legacy)
+
+    def resolve(self, token: Optional[str]) -> Optional[Identity]:
+        """Identity for a presented token, or None if unauthorized. When no auth
+        is configured at all, returns an anonymous admin (open dev posture)."""
+        if not self.auth_configured:
+            return Identity("anonymous", "admin")
+        if token:
+            ident = self._keys.get(token)
+            if ident is not None:
+                return ident
+            if self._legacy and hmac.compare_digest(token, self._legacy):
+                return Identity("legacy-token", "admin")
+        return None
+
+    def authorized(self, token: Optional[str], min_role: str) -> Optional[Identity]:
+        """Return the Identity iff it meets `min_role`, else None."""
+        ident = self.resolve(token)
+        if ident is None:
+            return None
+        if ROLE_RANK.get(ident.role, 0) >= ROLE_RANK[min_role]:
+            return ident
+        return None
+
+
+def build_identity_registry(settings) -> IdentityRegistry:
+    """Parse AEGIS_API_KEYS = 'key:name:role,key2:name2:role2'; fall back to the
+    legacy single webhook_token (treated as an admin key)."""
+    keys: dict = {}
+    raw = getattr(settings, "api_keys", "") or ""
+    for entry in [e for e in raw.split(",") if e.strip()]:
+        parts = entry.split(":")
+        if len(parts) >= 3 and parts[2] in ROLE_RANK:
+            keys[parts[0].strip()] = Identity(parts[1].strip(), parts[2].strip())
+    return IdentityRegistry(keys, settings.webhook_token)

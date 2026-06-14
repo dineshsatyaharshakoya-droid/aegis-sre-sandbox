@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Header, Request, WebSocket, WebSocke
 from typing import List, Dict, Any, Optional
 from aegis_sre.orchestrator.schemas import TelemetryEvent, CodePatch, ActionPlan
 from aegis_sre.telemetry.logger import logger
-from aegis_sre.telemetry.auth import verify_token, verify_sentry_signature, build_rate_limiter
+from aegis_sre.telemetry.auth import verify_sentry_signature, build_rate_limiter, build_identity_registry
 from aegis_sre.telemetry import metrics
 from aegis_sre.config import get_settings
 from aegis_sre.core.service import IncidentService, ConsumerRunner
@@ -23,6 +23,9 @@ from aegis_sre.orchestrator.safety import safety_policy
 settings = get_settings()
 # Cluster-wide on cloud (Redis), in-memory on-prem (A9).
 _rate_limiter = build_rate_limiter(settings)
+# Per-identity API keys + roles (Batch 3). No config => open dev; legacy
+# webhook_token => single admin key.
+_identity = build_identity_registry(settings)
 
 
 async def _rate_ok(key: str) -> bool:
@@ -57,17 +60,20 @@ def _reject_oversized(request: Request) -> None:
         raise HTTPException(status_code=413, detail="Payload too large")
 
 
-async def _enforce(request: Request, token: Optional[str]) -> None:
-    """Shared webhook guard: size cap, rate limit, then shared-secret token."""
+async def _enforce(request: Request, token: Optional[str], min_role: str = "ingest"):
+    """Shared webhook guard: size cap, rate limit, then RBAC. Returns the
+    authenticated Identity (or raises 401/403/429)."""
     _reject_oversized(request)
     if not await _rate_ok(_client_key(request)):
         logger.warning("rate_limited", client=_client_key(request))
         metrics.auth_rejections.labels(reason="rate_limit").inc()
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
-    if not verify_token(token, settings.webhook_token):
-        logger.warning("unauthorized_webhook", client=_client_key(request))
+    ident = _identity.authorized(token, min_role)
+    if ident is None:
+        logger.warning("unauthorized_webhook", client=_client_key(request), need_role=min_role)
         metrics.auth_rejections.labels(reason="unauthorized").inc()
         raise HTTPException(status_code=401, detail="Unauthorized")
+    return ident
 
 
 incident_service: IncidentService | None = None
@@ -544,28 +550,49 @@ async def get_incident_history(
     """Returns recent incidents for the dashboard. Token-gated (API-1): incident
     history includes crash logs, so it's protected by the same shared secret as
     the webhooks/WS. Open when no token is configured (dev)."""
-    if not verify_token(x_aegis_token or request.query_params.get("token"), settings.webhook_token):
+    if _identity.authorized(x_aegis_token or request.query_params.get("token"), "ingest") is None:
         metrics.auth_rejections.labels(reason="unauthorized").inc()
         raise HTTPException(status_code=401, detail="Unauthorized")
     if incident_service is None:
         raise HTTPException(status_code=503, detail="Service not ready")
     return {"incidents": await incident_service.store.get_recent_incidents(20)}
 
+def _ws_token(websocket: WebSocket) -> Optional[str]:
+    """Prefer the token in the Sec-WebSocket-Protocol header (keeps it OUT of the
+    URL/logs, P6); fall back to ?token= with a deprecation warning."""
+    proto = websocket.headers.get("sec-websocket-protocol")
+    if proto:
+        # format: "aegis, <token>"
+        parts = [p.strip() for p in proto.split(",")]
+        if len(parts) >= 2:
+            return parts[1]
+    q = websocket.query_params.get("token")
+    if q:
+        logger.warning("ws_token_in_url_deprecated")
+    return q
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    # Authenticate BEFORE accepting: token via `?token=` query param. When no
-    # token is configured the gate is open (verify_token returns True).
-    if not verify_token(websocket.query_params.get("token"), settings.webhook_token):
+    # Authenticate BEFORE accepting. Any authenticated identity may watch the
+    # stream; approve/reject additionally require the `approver` role (Batch 3).
+    ident = _identity.resolve(_ws_token(websocket))
+    if ident is None:
         logger.warning("unauthorized_ws_connection")
         await websocket.close(code=1008)  # policy violation
         return
     if not await manager.connect(websocket):
         return  # at WS capacity (P12)
+    from aegis_sre.telemetry.auth import ROLE_RANK
+    can_approve = ROLE_RANK.get(ident.role, 0) >= ROLE_RANK["approver"]
     try:
         while True:
             # Client approves a specific incident's patch: {action, incident_id}.
             data = await websocket.receive_json()
             if data.get("action") == "approve_patch":
+                if not can_approve:
+                    await websocket.send_json({"type": "error", "message": "approver role required"})
+                    continue
                 incident_id = data.get("incident_id")
                 if not incident_id:
                     await websocket.send_json({"type": "error", "message": "approve_patch requires incident_id"})
@@ -577,8 +604,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 # `arm: true` (P-1) authorizes LIVE execution of an ActionPlan;
                 # default (omitted/false) keeps it dry-run.
                 arm = bool(data.get("arm", False))
-                logger.info("human_approved_patch", incident_id=incident_id, arm=arm)
-                result = await approval_registry.approve(incident_id, get_vcs_provider(), arm=arm)
+                logger.info("human_approved_patch", incident_id=incident_id, arm=arm, approver=ident.name)
+                result = await approval_registry.approve(incident_id, get_vcs_provider(), arm=arm,
+                                                         approver=ident.name)
 
                 if result["status"] == "deployed":
                     if incident_service is not None:
@@ -612,11 +640,14 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "approval_result", **result})
 
             elif data.get("action") == "reject_patch":
+                if not can_approve:
+                    await websocket.send_json({"type": "error", "message": "approver role required"})
+                    continue
                 incident_id = data.get("incident_id")
                 if not incident_id:
                     await websocket.send_json({"type": "error", "message": "reject_patch requires incident_id"})
                     continue
-                rejected = await approval_registry.reject(incident_id)
+                rejected = await approval_registry.reject(incident_id, approver=ident.name)
                 logger.info("human_rejected_patch", incident_id=incident_id, rejected=rejected)
                 if incident_service is not None and rejected:
                     await incident_service.store.mark_event_status(incident_id, "rejected")

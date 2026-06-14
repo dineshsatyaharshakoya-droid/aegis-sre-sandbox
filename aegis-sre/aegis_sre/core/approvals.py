@@ -135,13 +135,14 @@ class ApprovalRegistry:
     async def pending_count(self) -> int:
         return await self._store.count()
 
-    async def reject(self, incident_id: str) -> bool:
+    async def reject(self, incident_id: str, approver: str = "system") -> bool:
         existed = await self._store.reject(incident_id)
         if existed:
-            logger.info("remediation_rejected", incident_id=incident_id)
+            logger.info("remediation_rejected", incident_id=incident_id, approver=approver)
         return existed
 
-    async def approve(self, incident_id: str, vcs_provider, runner=None, arm: bool = False) -> Dict:
+    async def approve(self, incident_id: str, vcs_provider, runner=None, arm: bool = False,
+                      approver: str = "system") -> Dict:
         """Approve a remediation. Idempotent and safe against double-approval.
 
         CodePatch -> open a PR (status `deployed`). ActionPlan -> gated
@@ -158,9 +159,14 @@ class ApprovalRegistry:
             return {"status": "not_found", "incident_id": incident_id}
 
         remediation, telemetry = _deserialize(blob)
+        logger.info("approval_attributed", incident_id=incident_id, approver=approver,
+                    kind=type(remediation).__name__, arm=arm)
         if isinstance(remediation, ActionPlan):
-            return await self._approve_action_plan(incident_id, remediation, blob, runner, arm)
-        return await self._approve_code_patch(incident_id, remediation, telemetry, blob, vcs_provider)
+            res = await self._approve_action_plan(incident_id, remediation, blob, runner, arm)
+        else:
+            res = await self._approve_code_patch(incident_id, remediation, telemetry, blob, vcs_provider)
+        res["approver"] = approver  # attribution: who authorized this action
+        return res
 
     async def _approve_code_patch(self, incident_id, patch, telemetry, blob, vcs_provider) -> Dict:
         try:
