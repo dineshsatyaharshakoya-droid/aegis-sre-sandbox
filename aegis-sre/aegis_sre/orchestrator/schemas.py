@@ -61,15 +61,31 @@ class Signal(BaseModel):
             metadata=meta,
         )
 
-class PatchProposal(BaseModel):
-    """
-    A strictly typed patch proposed by the Executor Agent (Hermes).
-    """
+class RemediationKind(str, Enum):
+    """The class of fix a `Remediation` represents. CODE_PATCH is today's only
+    live path; ACTION_PLAN is the Stone-3 (gated infra action) target."""
+    CODE_PATCH = "code_patch"
+    ACTION_PLAN = "action_plan"
+
+
+class Remediation(BaseModel):
+    """Stone 1: the base type for any proposed fix. Carries the diagnosis fields
+    common to every remediation; concrete subclasses add their payload. Lets the
+    executor/reviewer/deploy path become remediation-type-agnostic in later
+    phases without the crash→patch path changing today."""
+    kind: RemediationKind
+    root_cause_analysis: str = Field(description="The exact failure and its root cause.")
+    explanation: str = Field(description="A brief explanation of why this fixes the issue.")
+
+
+class CodePatch(Remediation):
+    """A source-code fix: replace `target_content` with `replacement_content` in
+    `file_path`. This is the body of the former `PatchProposal` (kept as an alias
+    below for back-compat) now expressed as a `Remediation`."""
+    kind: RemediationKind = RemediationKind.CODE_PATCH
     file_path: str = Field(description="The strictly relative path to the file to be patched.")
     target_content: str = Field(description="The exact chunk of code to replace.")
     replacement_content: str = Field(description="The new code to insert.")
-    root_cause_analysis: str = Field(description="Explicitly state the exact line of code that failed and the root cause.")
-    explanation: str = Field(description="A brief explanation of why this fixes the issue.")
 
     @field_validator('file_path')
     @classmethod
@@ -77,6 +93,11 @@ class PatchProposal(BaseModel):
         if ".." in v or v.startswith("/"):
             raise ValueError("Path traversal detected. file_path must be strictly relative to the repository root and cannot contain '..'")
         return v
+
+
+# Back-compat alias: existing imports/constructions of `PatchProposal` continue to
+# work unchanged (it *is* a CodePatch). Phases B2+ migrate call sites to CodePatch.
+PatchProposal = CodePatch
 
 class SecurityReview(BaseModel):
     """
