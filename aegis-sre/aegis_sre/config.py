@@ -102,6 +102,17 @@ class Settings:
     sentry_secret: str = field(default_factory=lambda: _env("AEGIS_SENTRY_SECRET", ""))
     # Per-client requests/minute on the webhooks. 0 => disabled.
     rate_limit_rpm: int = field(default_factory=lambda: _env_int("AEGIS_RATE_LIMIT_RPM", 0))
+    # --- Abuse / input-firewall hardening (red-team batch 1) ---
+    # Only trust X-Forwarded-For for the rate-limit client key when explicitly
+    # behind a known proxy. Default off so a spoofed header can't defeat limits (P9).
+    trust_forwarded_for: bool = field(
+        default_factory=lambda: _env("AEGIS_TRUST_XFF", "false").lower() == "true")
+    # Hard caps on request body + crash-log size (P10): reject before they hit the
+    # store / the LLM prompt (cost + memory DoS).
+    max_body_bytes: int = field(default_factory=lambda: _env_int("AEGIS_MAX_BODY_BYTES", 1_000_000))
+    max_crash_log_chars: int = field(default_factory=lambda: _env_int("AEGIS_MAX_CRASH_LOG", 65_536))
+    # Cap concurrent WebSocket connections (P12).
+    max_ws_connections: int = field(default_factory=lambda: _env_int("AEGIS_MAX_WS", 200))
 
     # --- LLM (OpenAI-compatible endpoint; e.g. local Ollama) ----------------
     # Aegis talks to models over the OpenAI Chat Completions API. A local Ollama

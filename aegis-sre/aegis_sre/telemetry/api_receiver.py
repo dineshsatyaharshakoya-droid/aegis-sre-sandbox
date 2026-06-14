@@ -38,15 +38,28 @@ approval_registry = build_approval_registry(settings)
 
 
 def _client_key(request: Request) -> str:
-    """Best-effort client identity for rate limiting (honours a single proxy hop)."""
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """Client identity for rate limiting. X-Forwarded-For is only trusted when
+    explicitly enabled (behind a known proxy); otherwise a spoofed header could
+    mint unlimited 'clients' and defeat the limiter (P9)."""
+    if settings.trust_forwarded_for:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 
+def _reject_oversized(request: Request) -> None:
+    """Reject a request whose declared body exceeds the cap before we read/parse
+    it into memory or feed it to the LLM (P10)."""
+    cl = request.headers.get("content-length")
+    if cl and cl.isdigit() and int(cl) > settings.max_body_bytes:
+        metrics.auth_rejections.labels(reason="oversized").inc()
+        raise HTTPException(status_code=413, detail="Payload too large")
+
+
 async def _enforce(request: Request, token: Optional[str]) -> None:
-    """Shared webhook guard: rate limit, then shared-secret token. Raises HTTPException."""
+    """Shared webhook guard: size cap, rate limit, then shared-secret token."""
+    _reject_oversized(request)
     if not await _rate_ok(_client_key(request)):
         logger.warning("rate_limited", client=_client_key(request))
         metrics.auth_rejections.labels(reason="rate_limit").inc()
@@ -199,9 +212,16 @@ class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket) -> bool:
+        """Accept a WS client unless the connection cap is reached (P12 — an
+        unbounded client list is a memory + broadcast-amplification DoS)."""
+        if len(self.active_connections) >= settings.max_ws_connections:
+            await websocket.close(code=1013)  # try again later
+            metrics.auth_rejections.labels(reason="ws_capacity").inc()
+            return False
         await websocket.accept()
         self.active_connections.append(websocket)
+        return True
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
@@ -346,6 +366,12 @@ async def _process_telemetry(event: TelemetryEvent) -> dict:
     """Shared ingestion pipeline for all webhook adapters: de-dup, persist, publish."""
     if incident_service is None:  # pragma: no cover - startup guard
         raise HTTPException(status_code=503, detail="Service not ready")
+    # Truncate an oversized crash_log before it hits the store / LLM prompt (P10):
+    # a 10MB stack trace is a cost + memory DoS, not useful diagnostic signal.
+    cap = settings.max_crash_log_chars
+    if len(event.crash_log) > cap:
+        logger.warning("crash_log_truncated", event_id=event.event_id, original_len=len(event.crash_log))
+        event = event.model_copy(update={"crash_log": event.crash_log[:cap] + "\n...[truncated]"})
     return await incident_service.ingest(event)
 
 @app.post("/webhook/crash")
@@ -372,6 +398,12 @@ async def receive_sentry_webhook(request: Request):
     Parses the massive Sentry JSON payload and normalizes it into a TelemetryEvent.
     Verifies the Sentry HMAC signature over the raw body when a secret is set.
     """
+    _reject_oversized(request)
+    # Fail closed on cloud: an internet-exposed Sentry endpoint MUST verify HMAC
+    # (P7 — it was open by default whenever sentry_secret was unset).
+    if settings.is_cloud and not settings.sentry_secret:
+        raise HTTPException(status_code=401, detail="Sentry signature secret required")
+
     # Read the raw body once so we can both verify the HMAC and parse it.
     raw = await request.body()
 
@@ -527,7 +559,8 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.warning("unauthorized_ws_connection")
         await websocket.close(code=1008)  # policy violation
         return
-    await manager.connect(websocket)
+    if not await manager.connect(websocket):
+        return  # at WS capacity (P12)
     try:
         while True:
             # Client approves a specific incident's patch: {action, incident_id}.
