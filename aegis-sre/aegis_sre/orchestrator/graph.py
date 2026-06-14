@@ -66,8 +66,10 @@ def _error_summary(crash_log: str, max_len: int = 240) -> str:
     lines = [ln.strip() for ln in (crash_log or "").splitlines() if ln.strip()]
     if not lines:
         return (crash_log or "")[:max_len]
+    # F6: only match genuine error/failure lines — the old `": " in ln` fallback
+    # matched timestamped INFO lines and degraded retrieval quality.
     for ln in reversed(lines):
-        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception|Warning)\b", ln) or ": " in ln:
+        if re.search(r"(Error|Exception|Warning|Failed|Failure|Traceback|panic|FATAL|OOM)", ln):
             return ln[:max_len]
     return lines[-1][:max_len]
 

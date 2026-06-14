@@ -107,3 +107,33 @@ def test_redis_approval_registry_cross_process_live():
     r1, r2 = asyncio.run(go())
     assert r1["status"] == "deployed" and r1["pr_url"].endswith("/pull/42")
     assert r2["status"] == "already_approved"
+
+
+# --- A9: cluster-wide Redis rate limiter ---
+
+@redis_up
+def test_redis_rate_limiter_live():
+    from aegis_sre.telemetry.auth import RedisRateLimiter
+    async def go():
+        rl = RedisRateLimiter(REDIS_URL, max_per_minute=2)
+        key = f"rl-{time.time()}"
+        return [await rl.allow(key) for _ in range(3)]
+    assert asyncio.run(go()) == [True, True, False]  # 3rd over the per-minute cap
+
+
+@redis_up
+def test_redis_rate_limiter_disabled_when_zero():
+    from aegis_sre.telemetry.auth import RedisRateLimiter
+    async def go():
+        rl = RedisRateLimiter(REDIS_URL, max_per_minute=0)
+        return all([await rl.allow("any") for _ in range(5)])
+    assert asyncio.run(go()) is True
+
+
+def test_build_rate_limiter_selection():
+    from aegis_sre.config import Settings
+    from aegis_sre.telemetry.auth import RedisRateLimiter, SlidingWindowRateLimiter, build_rate_limiter
+    cloud = Settings(profile="cloud")
+    onprem = Settings(profile="onprem", cache_backend="memory", broker_backend="inprocess", store_backend="sqlite")
+    assert isinstance(build_rate_limiter(cloud), RedisRateLimiter)
+    assert isinstance(build_rate_limiter(onprem), SlidingWindowRateLimiter)

@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Header, Request, WebSocket, WebSocke
 from typing import List, Dict, Any, Optional
 from aegis_sre.orchestrator.schemas import TelemetryEvent, CodePatch, ActionPlan
 from aegis_sre.telemetry.logger import logger
-from aegis_sre.telemetry.auth import verify_token, verify_sentry_signature, SlidingWindowRateLimiter
+from aegis_sre.telemetry.auth import verify_token, verify_sentry_signature, build_rate_limiter
 from aegis_sre.telemetry import metrics
 from aegis_sre.config import get_settings
 from aegis_sre.core.service import IncidentService, ConsumerRunner
@@ -21,7 +21,16 @@ from aegis_sre.orchestrator.safety import safety_policy
 
 # Built on startup from the active profile (on-prem SQLite / cloud Postgres+Redis).
 settings = get_settings()
-_rate_limiter = SlidingWindowRateLimiter(settings.rate_limit_rpm)
+# Cluster-wide on cloud (Redis), in-memory on-prem (A9).
+_rate_limiter = build_rate_limiter(settings)
+
+
+async def _rate_ok(key: str) -> bool:
+    """Rate-limit check tolerant of a sync (in-memory) or async (Redis) limiter."""
+    res = _rate_limiter.allow(key)
+    if asyncio.iscoroutine(res):
+        return await res
+    return res
 # Holds generated patches awaiting human approval (incident_id -> patch).
 # Shared on the cloud tier (Redis) so worker-registered remediations are
 # approvable from any API replica; in-memory on-prem (A8 / F2).
@@ -36,9 +45,9 @@ def _client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _enforce(request: Request, token: Optional[str]) -> None:
+async def _enforce(request: Request, token: Optional[str]) -> None:
     """Shared webhook guard: rate limit, then shared-secret token. Raises HTTPException."""
-    if not _rate_limiter.allow(_client_key(request)):
+    if not await _rate_ok(_client_key(request)):
         logger.warning("rate_limited", client=_client_key(request))
         metrics.auth_rejections.labels(reason="rate_limit").inc()
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
@@ -345,7 +354,7 @@ async def receive_crash_telemetry(
     Receives a TelemetryEvent JSON, checks idempotency, and fires the repair swarm.
     Requires the shared-secret `X-Aegis-Token` header when a token is configured.
     """
-    _enforce(request, x_aegis_token)
+    await _enforce(request, x_aegis_token)
     result = await _process_telemetry(event)
     if result.get("status") == "dropped":
         raise HTTPException(status_code=429, detail=result.get("message", "At capacity"))
@@ -361,7 +370,7 @@ async def receive_sentry_webhook(request: Request):
     # Read the raw body once so we can both verify the HMAC and parse it.
     raw = await request.body()
 
-    if not _rate_limiter.allow(_client_key(request)):
+    if not await _rate_ok(_client_key(request)):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
     signature = request.headers.get("sentry-hook-signature") or request.headers.get("sentry-hook-signature-256")
@@ -424,7 +433,7 @@ async def receive_alertmanager_webhook(
     canonical TelemetryEvent via the Stone-1 adapter, and run through the same
     ingest pipeline as crashes. Resolved alerts are ignored.
     """
-    _enforce(request, x_aegis_token)
+    await _enforce(request, x_aegis_token)
     from aegis_sre.telemetry.alert_adapter import parse_alertmanager
     return await _ingest_signals(parse_alertmanager(await _json(request)), "alertmanager")
 
@@ -435,7 +444,7 @@ async def receive_datadog_webhook(
     x_aegis_token: Optional[str] = Header(default=None, alias="X-Aegis-Token"),
 ):
     """Datadog alert webhook adapter (C5) -> Signal(metric_alert) -> swarm."""
-    _enforce(request, x_aegis_token)
+    await _enforce(request, x_aegis_token)
     from aegis_sre.telemetry.alert_adapter import parse_datadog
     return await _ingest_signals(parse_datadog(await _json(request)), "datadog")
 
@@ -446,7 +455,7 @@ async def receive_pagerduty_webhook(
     x_aegis_token: Optional[str] = Header(default=None, alias="X-Aegis-Token"),
 ):
     """PagerDuty v3 webhook adapter (C5) -> Signal(metric_alert) -> swarm."""
-    _enforce(request, x_aegis_token)
+    await _enforce(request, x_aegis_token)
     from aegis_sre.telemetry.alert_adapter import parse_pagerduty
     return await _ingest_signals(parse_pagerduty(await _json(request)), "pagerduty")
 

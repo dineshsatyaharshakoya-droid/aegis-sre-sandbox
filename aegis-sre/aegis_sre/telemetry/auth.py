@@ -88,3 +88,41 @@ class SlidingWindowRateLimiter:
         stale = [k for k, dq in self._hits.items() if not dq or dq[-1] < cutoff]
         for k in stale:
             del self._hits[k]
+
+
+class RedisRateLimiter:
+    """Cluster-wide fixed-window limiter (A9). The same per-client limit holds
+    across all API replicas because the counter lives in Redis. `allow()` is
+    async (a Redis round-trip); `max_per_minute <= 0` disables limiting."""
+
+    def __init__(self, redis_url: str, max_per_minute: int, window_seconds: int = 60):
+        self._url = redis_url
+        self.max = max_per_minute
+        self.window = window_seconds
+        self._client = None
+
+    async def _conn(self):
+        if self._client is None:
+            import redis.asyncio as redis
+            self._client = redis.from_url(self._url, decode_responses=True)
+        return self._client
+
+    async def allow(self, key: str, now: Optional[float] = None) -> bool:
+        if self.max <= 0:
+            return True
+        now = time.time() if now is None else now
+        bucket = int(now // self.window)
+        rk = f"aegis:rl:{key}:{bucket}"
+        client = await self._conn()
+        count = await client.incr(rk)
+        if count == 1:
+            await client.expire(rk, self.window + 1)
+        return count <= self.max
+
+
+def build_rate_limiter(settings):
+    """Redis limiter on the cloud tier (limit holds across replicas); in-memory
+    sliding window on-prem."""
+    if settings.cache_backend == "redis" or settings.is_cloud:
+        return RedisRateLimiter(settings.redis_url, settings.rate_limit_rpm)
+    return SlidingWindowRateLimiter(settings.rate_limit_rpm)
