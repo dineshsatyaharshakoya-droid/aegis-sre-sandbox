@@ -81,8 +81,47 @@ async def researcher_node(state: GraphState) -> GraphState:
             context_blocks.append(code_context)
     except Exception as e:
         logger.warning("rag_query_failed", node="researcher", error=str(e))
-        
+
+    # 3. Live observability (Prometheus). Guarded: an observability outage must
+    # degrade to "no live metrics", never fail the repair. Skipped entirely when
+    # PROMETHEUS_URL is unset (get_metrics_client() returns None).
+    try:
+        metrics_block = await _gather_live_metrics(state["telemetry"].service_name)
+        if metrics_block:
+            context_blocks.append(metrics_block)
+    except Exception as e:  # noqa: BLE001 - never let metrics enrichment break the graph
+        logger.warning("prometheus_query_failed", node="researcher", error=str(e))
+
     return {"code_context": "\n".join(context_blocks)}
+
+
+async def _gather_live_metrics(service_name: str) -> str | None:
+    """Pull a small standard panel of live metrics for the crashing service and
+    render it as an LLM-readable context block. Returns None when observability
+    is disabled or nothing is available."""
+    from aegis_sre.orchestrator.metrics_tools import format_samples, get_metrics_client
+
+    client = get_metrics_client()
+    if client is None:
+        return None
+
+    logger.info("querying_live_metrics", node="researcher", service=service_name)
+    # `up` proves the scrape target's liveness; the others are best-effort and
+    # simply render "(no data)" if the service doesn't export them.
+    queries = [
+        "up",
+        f'up{{job="{service_name}"}}',
+        f'rate(http_requests_total{{job="{service_name}",code=~"5.."}}[5m])',
+        f'process_resident_memory_bytes{{job="{service_name}"}}',
+    ]
+    blocks = []
+    for q in queries:
+        samples = await client.query(q)
+        if samples:
+            blocks.append(format_samples(q, samples))
+    if not blocks:
+        return None
+    return "--- Live Metrics (Prometheus) ---\n" + "\n".join(blocks)
 
 async def executor_node(state: GraphState) -> GraphState:
     iteration = state.get("iteration_count", 0)

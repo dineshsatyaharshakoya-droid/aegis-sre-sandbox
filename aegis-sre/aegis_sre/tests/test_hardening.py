@@ -51,7 +51,13 @@ def _event(eid="e1", svc="svc", log="boom"):
 # --------------------------------------------------------------------------- #
 # config
 # --------------------------------------------------------------------------- #
-def test_config_profile_derivation_and_state_path():
+def test_config_profile_derivation_and_state_path(monkeypatch):
+    # Hermetic: backend *derivation* must be tested without ambient overrides.
+    # A local .env may set AEGIS_STORE/BROKER/CACHE (e.g. scratch Redis/Postgres),
+    # which config.py loads via load_dotenv(); clear them so we test the defaults.
+    for var in ("AEGIS_STORE", "AEGIS_BROKER", "AEGIS_CACHE"):
+        monkeypatch.delenv(var, raising=False)
+
     cloud = Settings(profile="cloud")
     assert cloud.store_backend == "postgres"
     assert cloud.broker_backend == "redis"

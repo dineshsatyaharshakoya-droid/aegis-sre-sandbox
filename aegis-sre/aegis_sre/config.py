@@ -53,6 +53,9 @@ class Settings:
     # --- Connection strings ------------------------------------------------
     database_url: str = field(default_factory=lambda: _env("AEGIS_DATABASE_URL", ""))
     redis_url: str = field(default_factory=lambda: _env("AEGIS_REDIS_URL", "redis://localhost:6379/0"))
+    # Prometheus HTTP API base (no trailing /api/v1). Empty => live-metrics
+    # enrichment is skipped (the researcher still runs on VCS + RAG context).
+    prometheus_url: str = field(default_factory=lambda: _env("PROMETHEUS_URL", ""))
     sqlite_path: str = field(
         default_factory=lambda: _env(
             "AEGIS_SQLITE_PATH",
