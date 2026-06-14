@@ -9,7 +9,7 @@ each increment relaxes the two market-gating limiters and moves us toward the
 - **#1 Trigger modality** — crash/stack-trace → must become metric/alert/stream.
 - **#2 Remediation modality** — code patch/PR → must become live actions.
 
-_Last updated: atomic audit remediated — all Medium issues closed (security: /incidents auth, E2B shlex, env-int guard; latency: concurrent metrics, graph reuse, O(1) cache, chroma out-of-workspace, error-summary queries; Stone-3: arm-for-live path, partial rollback, dedup-key guard, status-write durability, dashboard patch_rejected). Tests: 234 passing; coverage ~80%. No criticals remain. Stone 2 + 3 complete; Stone 0 ~92%._ Coverage: ~81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
+_Last updated: **Stones 0–3 all complete** (Stone 0 finished: A1–A12). 248 tests passing. Next arc is Stone 4 (productionize). — prior: atomic audit remediated — all Medium issues closed (security: /incidents auth, E2B shlex, env-int guard; latency: concurrent metrics, graph reuse, O(1) cache, chroma out-of-workspace, error-summary queries; Stone-3: arm-for-live path, partial rollback, dedup-key guard, status-write durability, dashboard patch_rejected). Tests: 234 passing; coverage ~80%. No criticals remain. Stone 2 + 3 complete; Stone 0 ~92%._ Coverage: ~81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
 
 ---
 
@@ -17,7 +17,7 @@ _Last updated: atomic audit remediated — all Medium issues closed (security: /
 
 | Stone | Goal | Status | Limiter moved |
 |-------|------|--------|---------------|
-| 0 — foundation | see/measure/operate the existing product | 🟩🟩🟩🟨 ~97% | HA (A8/A9/A10/A11) + eval + CI + incremental RAG + 3-replica smoke; OTel (A1-A2) last |
+| 0 — foundation | see/measure/operate the existing product | ✅ **done** | A1–A12: OTel tracing + HA (Redis approvals/limiter/pubsub/recover-guard) + eval+CI + RAG ingest (incremental) + 3-replica smoke |
 | 1 — Signal/Remediation | model non-crash triggers + non-code fixes | ✅ done | #1 & #2 (model) |
 | 2 — MCP eyes | alert-triggered + live-context diagnosis | ✅ **done** | **#1 (live) — metrics+logs+registry+adapters** |
 | 3 — MCP hands (sellable) | gated live execution | ✅ **done** | **#2 (live) — full loop, e2e signed off** |

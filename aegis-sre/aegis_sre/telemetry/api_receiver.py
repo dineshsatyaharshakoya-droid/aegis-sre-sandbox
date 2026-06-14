@@ -93,6 +93,11 @@ async def lifespan(app: FastAPI):
         logger.warning("webhook_auth_disabled", profile=settings.profile,
                        detail="AEGIS_WEBHOOK_TOKEN unset; webhooks are unauthenticated.")
 
+    # Best-effort OTel tracing (A1-A2): real spans when the SDK + an OTLP
+    # endpoint are configured, no-op otherwise.
+    from aegis_sre.telemetry import tracing
+    tracing.setup_tracing("aegis-api")
+
     store = build_store(settings)
     broker = build_broker(settings)
     cache = build_cache(settings)

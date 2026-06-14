@@ -28,7 +28,7 @@ from aegis_sre.infra.cache import Cache
 from aegis_sre.infra.store import EventStore
 from aegis_sre.orchestrator.schemas import TelemetryEvent
 from aegis_sre.telemetry.logger import logger
-from aegis_sre.telemetry import metrics
+from aegis_sre.telemetry import metrics, tracing
 
 
 def compute_signature(service_name: str, crash_log: str) -> str:
@@ -68,7 +68,14 @@ class IncidentService:
             event.event_id, event.service_name, event.model_dump_json()
         )
 
-        published = await self.broker.publish(event.model_dump(mode="json"))
+        # Trace the ingest and carry the trace context into the broker payload so
+        # the worker's processing span links across the ingest->broker->worker hop
+        # (A1-A2; no-op without the OTel SDK).
+        payload = event.model_dump(mode="json")
+        with tracing.span("aegis.ingest", **{"incident.id": event.event_id,
+                                             "service.name": event.service_name}):
+            payload["_trace"] = tracing.inject({})
+            published = await self.broker.publish(payload)
         self._sample_queue_depth()
         if not published:
             # Back-pressure: broker full. Surface so the API can return 429.
@@ -147,9 +154,13 @@ class ConsumerRunner:
 
         started = time.monotonic()
         result = "failed"
+        # Link the processing span to the API's ingest span via the carried trace
+        # context (A2; no-op without the OTel SDK).
+        parent = tracing.extract(delivery.payload.get("_trace"))
         try:
             # God-Node kill switch: bound the LangGraph swarm.
-            await asyncio.wait_for(self.processor(event), timeout=self.timeout_seconds)
+            with tracing.span("aegis.process", context=parent, **{"incident.id": event.event_id}):
+                await asyncio.wait_for(self.processor(event), timeout=self.timeout_seconds)
             result = "completed"
         except asyncio.TimeoutError:
             logger.error("god_node_kill_switch_activated", event_id=event.event_id, reason="timeout")
