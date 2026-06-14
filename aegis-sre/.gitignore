@@ -17,5 +17,8 @@ venv/
 # Generated eval reports (corpus is tracked; reports are run artifacts)
 eval/report.json
 
+# Coverage artifacts
+.coverage
+
 # OS
 .DS_Store
