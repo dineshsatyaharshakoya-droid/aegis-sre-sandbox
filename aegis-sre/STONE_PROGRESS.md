@@ -9,7 +9,7 @@ each increment relaxes the two market-gating limiters and moves us toward the
 - **#1 Trigger modality** — crash/stack-trace → must become metric/alert/stream.
 - **#2 Remediation modality** — code patch/PR → must become live actions.
 
-_Last updated: half-baked audit remediated (graph→ActionPlan wired, RAG ingest, WS fan-out, dashboard approve/reject, dead code deleted, registry handlers + k8s tools, vcs fixes). Tests: 226 passing; coverage ~80%. Stone 2 + 3 complete; Stone 0 ~92%._ Coverage: ~81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
+_Last updated: atomic audit remediated — all Medium issues closed (security: /incidents auth, E2B shlex, env-int guard; latency: concurrent metrics, graph reuse, O(1) cache, chroma out-of-workspace, error-summary queries; Stone-3: arm-for-live path, partial rollback, dedup-key guard, status-write durability, dashboard patch_rejected). Tests: 234 passing; coverage ~80%. No criticals remain. Stone 2 + 3 complete; Stone 0 ~92%._ Coverage: ~81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
 
 ---
 
