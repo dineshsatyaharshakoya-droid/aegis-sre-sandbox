@@ -126,3 +126,41 @@ def test_reject_drops_pending():
 
 def test_reject_unknown_is_false():
     assert ApprovalRegistry().reject("nope") is False
+
+
+# --- P-1: arming an ActionPlan executes it live ---
+
+def test_actionplan_arm_executes_live(monkeypatch):
+    import aegis_sre.orchestrator.action_executor as ax
+    import aegis_sre.integrations.tool_registry as tr
+    log = []
+    reg = tr.ToolRegistry()
+    async def cordon(**k): log.append("cordon"); return "ok"
+    reg.register("k8s.cordon_node", tr.RiskClass.ACT, "c", handler=cordon)
+    monkeypatch.setattr(ax, "get_tool_registry", lambda: reg)
+    plan = ActionPlan(steps=[ActionStep(tool="k8s.cordon_node", args={"node": "n1"})],
+                      blast_radius=BlastRadius.LOW, dry_run=True,  # not armed yet
+                      root_cause_analysis="rc", explanation="why")  # verification None
+    registry = ApprovalRegistry()
+    registry.register("i-arm", plan, TELE)
+    res = asyncio.run(registry.approve("i-arm", _FakeVCS(), arm=True))
+    assert res["mode"] == "live" and res["resolved"] is True
+    assert log == ["cordon"]
+
+
+def test_actionplan_without_arm_stays_dry_run(monkeypatch):
+    import aegis_sre.orchestrator.action_executor as ax
+    import aegis_sre.integrations.tool_registry as tr
+    log = []
+    reg = tr.ToolRegistry()
+    async def cordon(**k): log.append("cordon"); return "ok"
+    reg.register("k8s.cordon_node", tr.RiskClass.ACT, "c", handler=cordon)
+    monkeypatch.setattr(ax, "get_tool_registry", lambda: reg)
+    plan = ActionPlan(steps=[ActionStep(tool="k8s.cordon_node", args={"node": "n1"})],
+                      blast_radius=BlastRadius.LOW, dry_run=True,
+                      root_cause_analysis="rc", explanation="why")
+    registry = ApprovalRegistry()
+    registry.register("i-noarm", plan, TELE)
+    res = asyncio.run(registry.approve("i-noarm", _FakeVCS()))  # arm defaults False
+    assert res["mode"] == "dry_run"
+    assert log == []  # never executed live

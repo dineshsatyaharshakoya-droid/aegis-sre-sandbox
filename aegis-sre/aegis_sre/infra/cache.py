@@ -49,14 +49,13 @@ class InMemoryCache(Cache):
     async def claim(self, key: str, ttl_seconds: int) -> bool:
         now = time.time()
         with self._lock:
-            # Evict expired claims.
-            expired = [k for k, ts in self._claims.items() if now - ts >= ttl_seconds]
-            for k in expired:
-                del self._claims[k]
-
+            # O(1): check only THIS key's expiry rather than scanning all claims
+            # (CA-1 — the full scan held the lock O(n) and blocked the event loop
+            # under many claims). Stale entries for other keys are bounded by the
+            # LRU cap below and become re-claimable the next time they're seen.
             ts = self._claims.get(key)
             if ts is not None and (now - ts) < ttl_seconds:
-                return False  # duplicate
+                return False  # duplicate within the TTL window
 
             self._claims[key] = now
             self._claims.move_to_end(key)

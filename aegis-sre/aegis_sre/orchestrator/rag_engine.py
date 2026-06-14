@@ -86,8 +86,14 @@ class RAGEngine:
                     base_url=ollama_url
                 )
                 
-                # Setup local ChromaDB with Dual Collections
-                db = chromadb.PersistentClient(path=os.path.join(workspace_path, ".chroma_db"))
+                # Persist ChromaDB OUTSIDE the indexed workspace (RAG-1): under
+                # workspace_path it polluted the project root and the index walked
+                # its own DB files. Defaults to ~/.aegis/chroma.
+                chroma_path = os.environ.get(
+                    "AEGIS_CHROMA_PATH",
+                    os.path.join(os.path.expanduser("~"), ".aegis", "chroma"))
+                os.makedirs(chroma_path, exist_ok=True)
+                db = chromadb.PersistentClient(path=chroma_path)
                 
                 code_collection = db.get_or_create_collection("aegis_codebase")
                 self.code_store = ChromaVectorStore(chroma_collection=code_collection)

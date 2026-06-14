@@ -19,7 +19,7 @@ export interface Incident {
   service: string;
   crash_log?: string;
   time: string;
-  status: 'investigating' | 'patch_ready' | 'deployed' | 'error';
+  status: 'investigating' | 'patch_ready' | 'deployed' | 'rejected' | 'error';
   nodes_executed: string[];
   patch?: {
     file: string;

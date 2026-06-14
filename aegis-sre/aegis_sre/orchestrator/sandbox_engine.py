@@ -25,6 +25,7 @@ This module was hardened to close three production-critical defects:
 
 import os
 import asyncio
+import shlex
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -32,8 +33,16 @@ from aegis_sre.orchestrator.schemas import PatchProposal
 from aegis_sre.telemetry.logger import logger
 
 # Compile/repro hard caps so a pathological patch can't hang the swarm.
-COMPILE_TIMEOUT_SECONDS = int(os.environ.get("AEGIS_COMPILE_TIMEOUT", 30))
-REPRO_TIMEOUT_SECONDS = int(os.environ.get("AEGIS_REPRO_TIMEOUT", 120))
+def _env_int(name: str, default: int) -> int:
+    # Guard: a non-int env value must not crash the whole process at import (SB-4).
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+COMPILE_TIMEOUT_SECONDS = _env_int("AEGIS_COMPILE_TIMEOUT", 30)
+REPRO_TIMEOUT_SECONDS = _env_int("AEGIS_REPRO_TIMEOUT", 120)
 
 
 class PatchApplicationError(Exception):
@@ -229,7 +238,9 @@ class E2BEngine(ExecutionEngine):
                 argv = self._compile_argv(patch.file_path)
                 if argv is None:
                     return False, f"No compiler available for {patch.file_path}; cannot validate (failing closed)."
-                proc = sandbox.process.start(" ".join(argv))
+                # shlex.join quotes each arg so a crafted file_path can't inject
+                # shell syntax into the E2B process command (SB-3).
+                proc = sandbox.process.start(shlex.join(argv))
                 proc.wait()
                 if proc.exit_code != 0:
                     return False, str(proc.stderr)

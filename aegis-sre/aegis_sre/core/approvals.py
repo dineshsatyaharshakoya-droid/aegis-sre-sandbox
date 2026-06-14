@@ -41,7 +41,7 @@ class ApprovalRegistry:
     def pending_count(self) -> int:
         return len(self._pending)
 
-    async def approve(self, incident_id: str, vcs_provider, runner=None) -> Dict:
+    async def approve(self, incident_id: str, vcs_provider, runner=None, arm: bool = False) -> Dict:
         """Approve a remediation. Idempotent and safe against double-approval.
 
         Polymorphic by remediation type:
@@ -68,7 +68,7 @@ class ApprovalRegistry:
         remediation, telemetry = entry
 
         if isinstance(remediation, ActionPlan):
-            return await self._approve_action_plan(incident_id, remediation, entry, runner)
+            return await self._approve_action_plan(incident_id, remediation, entry, runner, arm)
         return await self._approve_code_patch(incident_id, remediation, telemetry, entry, vcs_provider)
 
     async def _approve_code_patch(self, incident_id, patch, telemetry, entry, vcs_provider) -> Dict:
@@ -91,11 +91,20 @@ class ApprovalRegistry:
         return {"status": "deployed", "incident_id": incident_id,
                 "file": patch.file_path, "pr_url": pr_url}
 
-    async def _approve_action_plan(self, incident_id, plan, entry, runner) -> Dict:
-        # Lazy import keeps approvals importable without the executor stack.
+    async def _approve_action_plan(self, incident_id, plan, entry, runner, arm=False) -> Dict:
+        # P-1: arming is the explicit operator step that allows LIVE execution.
+        # Without it (default) the plan runs dry-run. Arming both marks the plan
+        # armed AND uses a policy that permits live actions.
         if runner is None:
             from aegis_sre.orchestrator.remediation_runner import RemediationRunner
-            runner = RemediationRunner()
+            if arm:
+                from aegis_sre.orchestrator.action_executor import ActionExecutor
+                from aegis_sre.orchestrator.policy import Policy
+                plan.dry_run = False
+                runner = RemediationRunner(
+                    executor=ActionExecutor(policy=Policy(dry_run_default=False)))
+            else:
+                runner = RemediationRunner()
         outcome = await runner.run(plan, approved=True, verification=plan.verification)
 
         mode = outcome.executed.mode  # live | dry_run | blocked

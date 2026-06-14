@@ -142,9 +142,14 @@ def _incident_handler(action: str):
             raise RuntimeError("ALERT_WEBHOOK_URL not configured")
         if action == "trigger":
             return await notifier.trigger(**kwargs)
+        # ack/resolve need a dedup_key; guard so a missing one is a clear error,
+        # not a raw KeyError (TR-1).
+        dedup_key = kwargs.pop("dedup_key", None)
+        if dedup_key is None:
+            raise ValueError(f"incident.{action} requires 'dedup_key'")
         if action == "acknowledge":
-            return await notifier.acknowledge(kwargs.pop("dedup_key"), **kwargs)
-        return await notifier.resolve(kwargs.pop("dedup_key"), **kwargs)
+            return await notifier.acknowledge(dedup_key, **kwargs)
+        return await notifier.resolve(dedup_key, **kwargs)
     return handler
 
 

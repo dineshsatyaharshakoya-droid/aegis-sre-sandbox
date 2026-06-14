@@ -92,6 +92,8 @@ export const useAegisStream = (url: string) => {
             };
           } else if (event.type === 'patch_deployed') {
             updated.status = 'deployed';
+          } else if (event.type === 'patch_rejected') {
+            updated.status = 'rejected';
           } else if (event.type === 'error') {
             updated.status = 'error';
           }

@@ -150,14 +150,18 @@ class ConsumerRunner:
         try:
             # God-Node kill switch: bound the LangGraph swarm.
             await asyncio.wait_for(self.processor(event), timeout=self.timeout_seconds)
-            await self.store.mark_event_status(event.event_id, "completed")
             result = "completed"
         except asyncio.TimeoutError:
             logger.error("god_node_kill_switch_activated", event_id=event.event_id, reason="timeout")
-            await self.store.mark_event_status(event.event_id, "failed")
         except Exception as e:  # noqa: BLE001
             logger.error("processing_failed", event_id=event.event_id, error=str(e))
-            await self.store.mark_event_status(event.event_id, "failed")
+
+        # Persist the terminal status separately and guarded (SV-2): a transient
+        # status-write failure must not crash the consumer or mislabel `result`.
+        try:
+            await self.store.mark_event_status(event.event_id, result)
+        except Exception as e:  # noqa: BLE001
+            logger.error("status_write_failed", event_id=event.event_id, result=result, error=str(e))
         finally:
             metrics.repair_duration.observe(time.monotonic() - started)
             metrics.incidents_processed.labels(result=result).inc()

@@ -80,6 +80,7 @@ def _wire(monkeypatch, updates):
     async def fake_alert(action, dedup_key, **kw): alerts.append((action, dedup_key))
     monkeypatch.setattr(ar, "_alert", fake_alert)
     monkeypatch.setattr(graph_mod, "build_graph", lambda checkpointer=None: _FakeGraph(updates))
+    monkeypatch.setattr(ar, "_graph_app", None)  # reset API-2 cache for test isolation
     return mgr, alerts
 
 
@@ -114,3 +115,17 @@ def test_repair_loop_reraises_and_alerts_on_failure(monkeypatch):
         asyncio.run(ar.trigger_repair_loop(TELE))
     assert any(e["type"] == "error" for e in mgr.events)
     assert ("trigger", "e1") in alerts  # escalated
+
+
+# --- API-1: /incidents auth ---
+
+def test_incidents_open_when_no_token():
+    # conftest leaves webhook_token empty -> endpoint is open (dev)
+    assert client.get("/incidents").status_code == 200
+
+
+def test_incidents_gated_when_token_set(monkeypatch):
+    monkeypatch.setattr(ar.settings, "webhook_token", "s3cret")
+    assert client.get("/incidents").status_code == 401                      # no token
+    assert client.get("/incidents?token=s3cret").status_code == 200         # query token
+    assert client.get("/incidents", headers={"X-Aegis-Token": "s3cret"}).status_code == 200

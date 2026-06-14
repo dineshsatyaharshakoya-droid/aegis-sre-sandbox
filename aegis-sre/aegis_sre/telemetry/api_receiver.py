@@ -55,6 +55,9 @@ _checkpointer = None
 _checkpointer_cm = None
 _ws_pubsub = None
 _ws_fanout_task: asyncio.Task | None = None
+# Compiled LangGraph app, built once and reused across incidents (API-2 — was
+# recompiled per incident). Reset to None if the checkpointer is reopened.
+_graph_app = None
 
 
 @asynccontextmanager
@@ -254,10 +257,13 @@ async def trigger_repair_loop(telemetry: TelemetryEvent):
         final_state = initial_state
         config = {"configurable": {"thread_id": telemetry.event_id}}
 
-        # Lazy import + reuse of the process-wide checkpointer opened at startup
-        # (no per-incident SQLite open/close).
-        from aegis_sre.orchestrator.graph import build_graph
-        graph_app = build_graph(checkpointer=_checkpointer)
+        # Build the graph once and reuse it across incidents (API-2). The
+        # checkpointer is opened once at startup, so a single compiled app is safe.
+        global _graph_app
+        if _graph_app is None:
+            from aegis_sre.orchestrator.graph import build_graph
+            _graph_app = build_graph(checkpointer=_checkpointer)
+        graph_app = _graph_app
 
         async for output in graph_app.astream(initial_state, config=config):
             for node_name, state_update in output.items():
@@ -471,8 +477,16 @@ async def readiness_check():
     return {"status": "ready", "profile": settings.profile}
 
 @app.get("/incidents")
-async def get_incident_history():
-    """Returns a list of recent incidents to populate the dashboard on load."""
+async def get_incident_history(
+    request: Request,
+    x_aegis_token: Optional[str] = Header(default=None, alias="X-Aegis-Token"),
+):
+    """Returns recent incidents for the dashboard. Token-gated (API-1): incident
+    history includes crash logs, so it's protected by the same shared secret as
+    the webhooks/WS. Open when no token is configured (dev)."""
+    if not verify_token(x_aegis_token or request.query_params.get("token"), settings.webhook_token):
+        metrics.auth_rejections.labels(reason="unauthorized").inc()
+        raise HTTPException(status_code=401, detail="Unauthorized")
     if incident_service is None:
         raise HTTPException(status_code=503, detail="Service not ready")
     return {"incidents": await incident_service.store.get_recent_incidents(20)}
@@ -499,8 +513,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 # VCS import is lazy so the module stays importable without PyGithub.
                 from aegis_sre.orchestrator.vcs_provider import get_vcs_provider
 
-                logger.info("human_approved_patch", incident_id=incident_id)
-                result = await approval_registry.approve(incident_id, get_vcs_provider())
+                # `arm: true` (P-1) authorizes LIVE execution of an ActionPlan;
+                # default (omitted/false) keeps it dry-run.
+                arm = bool(data.get("arm", False))
+                logger.info("human_approved_patch", incident_id=incident_id, arm=arm)
+                result = await approval_registry.approve(incident_id, get_vcs_provider(), arm=arm)
 
                 if result["status"] == "deployed":
                     if incident_service is not None:

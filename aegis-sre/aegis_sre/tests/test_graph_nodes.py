@@ -180,3 +180,15 @@ def test_executor_still_produces_code_patch_for_crash(monkeypatch):
 
 def test_deploy_node_marks_resolved():
     assert graph.deploy_node({"current_patch": None})["resolved"] is True
+
+
+# --- RAG-5: error summary extraction for embedding queries ---
+
+def test_error_summary_extracts_exception_line():
+    log = 'Traceback (most recent call last):\n  File "x.py", line 3\nValueError: bad thing happened'
+    assert graph._error_summary(log).startswith("ValueError: bad thing")
+
+
+def test_error_summary_truncates_and_handles_empty():
+    assert len(graph._error_summary("x" * 999, max_len=240)) == 240
+    assert graph._error_summary("") == ""

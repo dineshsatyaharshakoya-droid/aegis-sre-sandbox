@@ -44,9 +44,16 @@ class RemediationRunner:
                   verification: Optional[VerificationCheck] = None) -> RemediationOutcome:
         executed = await self.executor.execute(plan, approved=approved)
 
-        # Only a live, fully-successful execution is a candidate for verify/rollback.
-        if executed.mode != "live" or not executed.success:
+        # Blocked / dry-run: nothing ran, so nothing to verify or undo.
+        if executed.mode != "live":
             return RemediationOutcome(executed, None, None, resolved=False)
+
+        # Live but a step errored mid-plan: compensate the PARTIAL execution by
+        # running the rollback steps, rather than leaving earlier steps applied (P-2).
+        if not executed.success:
+            logger.warning("remediation_partial_failure_rolling_back")
+            rollback = await self.executor.execute_rollback(plan)
+            return RemediationOutcome(executed, None, rollback, resolved=False)
 
         # No verification check supplied -> we executed but can't prove recovery.
         if verification is None:

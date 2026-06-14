@@ -129,3 +129,19 @@ def test_invoke_records_error_and_reraises():
         assert False
     except RuntimeError as e:
         assert "kubectl failed" in str(e)
+
+
+# --- TR-1: ack/resolve require dedup_key (clear error, not KeyError) ---
+
+def test_incident_ack_requires_dedup_key(monkeypatch):
+    import asyncio
+    import aegis_sre.orchestrator.incident_tools as inc
+    class FakeNotifier:
+        async def acknowledge(self, dedup_key, **kw): return "ok"
+    monkeypatch.setattr(inc, "get_incident_notifier", lambda: FakeNotifier())
+    reg = build_default_registry()
+    try:
+        asyncio.run(reg.invoke("incident.acknowledge"))  # no dedup_key
+        assert False
+    except ValueError as e:
+        assert "dedup_key" in str(e)

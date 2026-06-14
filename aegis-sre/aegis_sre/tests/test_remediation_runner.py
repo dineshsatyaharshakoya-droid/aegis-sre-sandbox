@@ -103,3 +103,26 @@ def test_blocked_plan_does_not_verify():
     out = asyncio.run(runner.run(plan, approved=True, verification=CHECK))
     assert out.executed.mode == "blocked"
     assert out.resolved is False and log == []
+
+
+# --- P-2: partial step failure triggers rollback ---
+
+def test_partial_step_failure_rolls_back():
+    log = []
+    reg = ToolRegistry()
+    async def cordon(**k): log.append("cordon"); return "ok"
+    async def boom(**k): raise RuntimeError("kubectl exploded")
+    async def uncordon(**k): log.append("uncordon"); return "ok"
+    reg.register("k8s.cordon_node", RiskClass.ACT, "c", handler=cordon)
+    reg.register("k8s.boom", RiskClass.ACT, "b", handler=boom)
+    reg.register("k8s.uncordon_node", RiskClass.ACT, "u", handler=uncordon)
+    plan = ActionPlan(
+        steps=[ActionStep(tool="k8s.cordon_node"), ActionStep(tool="k8s.boom")],
+        rollback_steps=[ActionStep(tool="k8s.uncordon_node")],
+        blast_radius=BlastRadius.LOW, dry_run=False,
+        root_cause_analysis="rc", explanation="why")
+    ex = ActionExecutor(registry=reg, policy=Policy(max_blast_radius=BlastRadius.HIGH, dry_run_default=False))
+    runner = RemediationRunner(executor=ex, verifier=_FakeVerifier(True))
+    out = asyncio.run(runner.run(plan, approved=True, verification=None))
+    assert out.resolved is False and out.rolled_back is True
+    assert log == ["cordon", "uncordon"]  # partial exec compensated, boom never verified

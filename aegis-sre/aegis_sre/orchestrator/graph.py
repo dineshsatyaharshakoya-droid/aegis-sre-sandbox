@@ -59,6 +59,19 @@ class GraphState(TypedDict):
 _ACTION_SIGNALS = {"metric_alert", "log_anomaly", "generic"}
 
 
+def _error_summary(crash_log: str, max_len: int = 240) -> str:
+    """Extract a focused query string from a crash log for RAG retrieval (RAG-5).
+    Prefers the exception line (e.g. 'ValueError: ...'); falls back to the last
+    non-empty line, truncated. Avoids embedding the entire (often huge) log."""
+    lines = [ln.strip() for ln in (crash_log or "").splitlines() if ln.strip()]
+    if not lines:
+        return (crash_log or "")[:max_len]
+    for ln in reversed(lines):
+        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception|Warning)\b", ln) or ": " in ln:
+            return ln[:max_len]
+    return lines[-1][:max_len]
+
+
 def planner_node(state: GraphState) -> GraphState:
     """Triage: decide whether this signal needs a code patch or an infra action,
     based on the originating Signal kind (carried in telemetry metadata by the
@@ -112,13 +125,14 @@ async def researcher_node(state: GraphState) -> GraphState:
         logger.info("querying_dual_rag_engine", node="researcher", query="crash_log")
         rag = get_rag_engine()
         
-        # Skill Retrieval Augmentation
-        skill_context = rag.query_skills(search_term=crash_log, top_k=1)
+        # Query with the extracted error summary, not the whole (often huge) crash
+        # log — shorter, more focused queries embed/retrieve better (RAG-5).
+        query = _error_summary(crash_log)
+        skill_context = rag.query_skills(search_term=query, top_k=1)
         if skill_context:
             context_blocks.append(skill_context)
-            
-        # Abstract Syntax Tree Codebase Retrieval
-        code_context = rag.query_codebase(search_term=crash_log, top_k=2)
+
+        code_context = rag.query_codebase(search_term=query, top_k=2)
         if code_context:
             context_blocks.append(code_context)
     except Exception as e:
@@ -156,9 +170,14 @@ async def _gather_live_metrics(service_name: str) -> str | None:
         f'rate(http_requests_total{{job="{service_name}",code=~"5.."}}[5m])',
         f'process_resident_memory_bytes{{job="{service_name}"}}',
     ]
+    # Fire the queries concurrently (G-4) instead of serially — ~4x RTT -> ~1x.
+    results = await asyncio.gather(*(client.query(q) for q in queries),
+                                   return_exceptions=True)
     blocks = []
-    for q in queries:
-        samples = await client.query(q)
+    for q, samples in zip(queries, results):
+        if isinstance(samples, Exception):
+            logger.warning("metric_query_failed", query=q, error=str(samples))
+            continue
         if samples:
             blocks.append(format_samples(q, samples))
     if not blocks:
@@ -237,7 +256,7 @@ async def _generate_action_plan(state: GraphState, iteration: int):
         "'blast_radius': 'low'|'medium'|'high', "
         "'verification': {'query': '<PromQL>', 'comparator': 'lt'|'lte'|'gt'|'gte'|'eq', 'threshold': <number>}, "
         "'root_cause_analysis': 'string', 'explanation': 'string'}\n"
-        f"Only use tools from this allowed list: {act_tools or ['k8s.cordon_node','k8s.scale_deployment','job.requeue']}."
+        f"Only use tools from this allowed list: {act_tools or ['k8s.cordon_node','k8s.drain_node','k8s.scale_deployment','k8s.restart_deployment']}."
     )
     user_prompt = (
         f"Alert / Signal:\n{state['telemetry'].crash_log}\n\n"
