@@ -137,3 +137,49 @@ def test_build_rate_limiter_selection():
     onprem = Settings(profile="onprem", cache_backend="memory", broker_backend="inprocess", store_backend="sqlite")
     assert isinstance(build_rate_limiter(cloud), RedisRateLimiter)
     assert isinstance(build_rate_limiter(onprem), SlidingWindowRateLimiter)
+
+
+# --- A12: 3-replica competing consumers (exactly-once across replicas) ---
+
+@redis_up
+def test_three_replica_competing_consumers_live():
+    """N messages on one Redis Streams consumer group are split across 3
+    competing consumers and each is processed exactly once (none lost, none
+    double-processed) — the cloud multi-replica HA guarantee."""
+    from aegis_sre.infra.broker import RedisStreamBroker
+    N = 9
+    stream = f"itest.replicas.{time.time()}"
+    group = "g"
+
+    async def go():
+        seed = RedisStreamBroker(redis_url=REDIS_URL, stream=stream, group=group, consumer="seed")
+        for i in range(N):
+            await seed.publish({"event_id": f"m{i}", "service_name": "s"})
+
+        processed = []
+
+        async def consumer(name):
+            b = RedisStreamBroker(redis_url=REDIS_URL, stream=stream, group=group, consumer=name)
+            try:
+                async for d in b.consume():
+                    processed.append(d.payload["event_id"])
+                    await b.ack(d.id)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                await b.close()
+
+        tasks = [asyncio.create_task(consumer(f"c{k}")) for k in range(3)]
+        for _ in range(100):                       # wait up to ~10s for all N
+            if len(processed) >= N:
+                break
+            await asyncio.sleep(0.1)
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await seed.close()
+        return processed
+
+    processed = asyncio.run(go())
+    assert sorted(processed) == sorted(f"m{i}" for i in range(N))   # all once
+    assert len(processed) == len(set(processed))                    # no duplicates
