@@ -71,25 +71,44 @@ class ActionExecutor:
                                    reason=decision.reason, steps=steps, audit=decision.audit)
 
         # Live execution — every step gated again at the tool level.
-        steps: List[StepResult] = []
-        for s in plan.steps:
+        steps = await self._run_steps(plan.steps)
+        return ExecutionResult(mode="live", decision=decision.decision.value,
+                               reason=decision.reason, steps=steps, audit=decision.audit)
+
+    async def execute_rollback(self, plan: ActionPlan) -> ExecutionResult:
+        """Run a plan's compensating steps (D5). Used after a live action fails
+        verification, to restore state. The steps still pass the per-tool guards
+        (act-classed, registered, has a handler); no policy approval gate, since
+        rolling back an already-approved action is the safe direction."""
+        if not plan.rollback_steps:
+            return ExecutionResult(mode="none", decision="n/a",
+                                   reason="no rollback steps defined", steps=[])
+        logger.warning("action_rollback_started", steps=len(plan.rollback_steps))
+        steps = await self._run_steps(plan.rollback_steps)
+        return ExecutionResult(mode="rollback", decision="n/a",
+                               reason="compensating after failed verification", steps=steps)
+
+    async def _run_steps(self, steps_in) -> List[StepResult]:
+        """Dispatch a list of action steps to their registry handlers, stopping on
+        the first error. Each step must be a registered, act-classed tool with a
+        handler (the per-tool defense-in-depth guard)."""
+        results: List[StepResult] = []
+        for s in steps_in:
             err = self._step_guard(s.tool)
             if err:
-                steps.append(StepResult(tool=s.tool, status="error", error=err))
+                results.append(StepResult(tool=s.tool, status="error", error=err))
                 logger.error("action_step_refused", tool=s.tool, error=err)
                 break
             tool = self.registry.get(s.tool)
             try:
                 out = await tool.handler(**s.args)
-                steps.append(StepResult(tool=s.tool, status="executed", output=str(out)))
+                results.append(StepResult(tool=s.tool, status="executed", output=str(out)))
                 logger.info("action_step_executed", tool=s.tool)
-            except Exception as e:  # noqa: BLE001 - record + stop the plan on first failure
-                steps.append(StepResult(tool=s.tool, status="error", error=str(e)))
+            except Exception as e:  # noqa: BLE001 - record + stop on first failure
+                results.append(StepResult(tool=s.tool, status="error", error=str(e)))
                 logger.error("action_step_failed", tool=s.tool, error=str(e))
                 break
-
-        return ExecutionResult(mode="live", decision=decision.decision.value,
-                               reason=decision.reason, steps=steps, audit=decision.audit)
+        return results
 
     def _step_guard(self, tool_name: str) -> Optional[str]:
         """Return an error string if this tool must not be executed, else None."""

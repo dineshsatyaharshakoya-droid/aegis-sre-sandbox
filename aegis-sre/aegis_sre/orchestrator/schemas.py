@@ -133,6 +133,9 @@ class ActionPlan(Remediation):
     blast_radius: BlastRadius = Field(default=BlastRadius.HIGH,
                                       description="Fail-safe default: assume HIGH until assessed.")
     dry_run: bool = Field(default=True, description="Safe by default; must be armed to execute.")
+    rollback_steps: List[ActionStep] = Field(
+        default_factory=list,
+        description="Compensating actions run automatically if post-action verification fails.")
 
     @field_validator('steps')
     @classmethod

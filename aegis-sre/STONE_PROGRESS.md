@@ -9,7 +9,7 @@ each increment relaxes the two market-gating limiters and moves us toward the
 - **#1 Trigger modality** — crash/stack-trace → must become metric/alert/stream.
 - **#2 Remediation modality** — code patch/PR → must become live actions.
 
-_Last updated: through cycle D4 (+ coverage/sample-size push). Tests: 183 passing. Coverage: 81% overall; decision/business-logic core 85–100% (schemas/validator/policy/executor/verifier/approvals/adapters/llm/store 98–100%). Remaining gaps are deliberately-out-of-scope live I/O: rag_engine (chromadb), api_receiver lifespan, sandbox E2B path — low-ROI to mock. Eval corpus expanded 10 → 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
+_Last updated: through cycle D5. Tests: 188 passing. Coverage: 81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
 
 ---
 
@@ -20,7 +20,7 @@ _Last updated: through cycle D4 (+ coverage/sample-size push). Tests: 183 passin
 | 0 — foundation | see/measure/operate the existing product | 🟩🟩🟩⬜ ~80% | — |
 | 1 — Signal/Remediation | model non-crash triggers + non-code fixes | ✅ done | #1 & #2 (model) |
 | 2 — MCP eyes | alert-triggered + live-context diagnosis | 🟩🟩🟩⬜ ~70% | **#1 (live)** |
-| 3 — MCP hands (sellable) | gated live execution | 🟩🟩🟩⬜ ~45% | **#2 (live) — policy + executor + verify** |
+| 3 — MCP hands (sellable) | gated live execution | 🟩🟩🟩⬜ ~65% | **#2 (live) — policy+executor+verify+rollback** |
 | 4 — productionize | multi-tenant, secrets, CI gate | ⬜ 0% | — |
 | 5 — HPC/GPU wedge | premium vertical | ⬜ 0% | — |
 
@@ -30,7 +30,8 @@ _Last updated: through cycle D4 (+ coverage/sample-size push). Tests: 183 passin
 
 | Cycle | What | Bigger-picture contribution | Commit |
 |-------|------|-----------------------------|--------|
-| D4 | `verifier.py` — re-read the metric to confirm recovery (per-series, fail-closed) + debug-pass fix of a GTE worst-case-aggregation bug | **Makes actions non-fire-and-forget**: proof a remediation worked, the gate before rollback (D5). | `pending` |
+| D5 | execute→verify→rollback spine (`remediation_runner.py` + `ActionPlan.rollback_steps` + executor rollback) | **Completes the safe-action loop**: failed verification auto-runs compensating steps; only proven recoveries stand. | `pending` |
+| D4 | `verifier.py` — re-read the metric to confirm recovery (per-series, fail-closed) + debug-pass fix of a GTE worst-case-aggregation bug | **Makes actions non-fire-and-forget**: proof a remediation worked, the gate before rollback (D5). | `caf7a0f` |
 | D2 | gated `ActionExecutor` (runs act-tools only when policy permits; refuses non-act/unknown/handler-less; stops on failure) | **Limiter #2 executes (safely)**: the only place live mutation happens, fully gated by D1. | `34552bd` |
 | D1 | `policy.py` action gate (dry-run default, blast caps, allow/deny, audit) + debug-pass fix of a live-on-unarmed safety hole | **Starts limiter #2 live (safely)**: the gate the sellable product rests on; gates `registry` act-tools by risk + blast radius. | `6b47e30` |
 | C4 | Alertmanager webhook → `Signal(metric_alert)` → swarm | **Relaxes limiter #1 live**: a metric alert (not just a crash) now triggers the repair loop. Completes Stone 2's trigger half. | `81d370c` |
@@ -60,8 +61,10 @@ _Last updated: through cycle D4 (+ coverage/sample-size push). Tests: 183 passin
 
 ## Next up
 
-**Stone 3 / D5 — rollback on regression.** Policy (D1), executor (D2), and
-verification (D4) are in. D5: if `verify()` says the signal did NOT clear (or
-regressed), run the plan's compensating/rollback steps automatically. Then D3
-threads it all together (approve → execute → verify → rollback) into the deploy
-path so a live action is never fire-and-forget — completing the sellable loop.
+**Stone 3 / D3 + D6 — thread the loop into the live path + audit.** The
+execute→verify→rollback spine (D5) exists as a unit; D3 wires it into the
+approval/deploy path so approving an `ActionPlan` actually drives
+`RemediationRunner.run(...)` (today B6 records it as pending). D6 adds per-action
+audit records + `aegis_actions_executed_total{type,result}` metrics. Then D7 is
+the staging end-to-end (alert→diagnose→approve→execute→verify→rollback) — the
+exit criterion for the sellable product.
