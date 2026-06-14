@@ -1,0 +1,17 @@
+# Coverage config. We exclude test files and lines that are boilerplate or only
+# reachable with live external systems (so the reported % reflects meaningful
+# logic coverage, not mock-of-mock theatre).
+[run]
+omit =
+    aegis_sre/tests/*
+    */__init__.py
+
+[report]
+show_missing = True
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    if TYPE_CHECKING:
+    raise NotImplementedError
+    @(abc\.)?abstractmethod
+    \.\.\.

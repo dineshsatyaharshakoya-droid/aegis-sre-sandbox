@@ -58,5 +58,53 @@
     "description": "Redis 'max number of clients reached': a new Redis client (and TCP connection) is created on every call instead of sharing a pooled client.",
     "log_snippet": "2026-06-09T07:45:19Z ERROR cache - redis op failed key=session:8831\nTraceback (most recent call last):\n  File \"app/cache.py\", line 22, in get_session\n    return redis.Redis(host=HOST, port=6379).get(key)\n  File \"redis/client.py\", line 1173, in execute_command\n    conn = self.connection_pool.get_connection(command_name)\nredis.exceptions.ConnectionError: max number of clients reached\n2026-06-09T07:45:19Z ERROR cache - ConnectionError: Error 99 connecting to redis:6379. Cannot assign requested address.",
     "ground_truth_diff": "diff --git a/app/cache.py b/app/cache.py\nindex 8c8d8e8..9f9a9b9 100644\n--- a/app/cache.py\n+++ b/app/cache.py\n@@ -1,6 +1,8 @@\n import redis\n\n HOST = \"redis\"\n+# Share one connection pool process-wide instead of opening a client per call.\n+_pool = redis.ConnectionPool(host=HOST, port=6379, max_connections=50)\n@@ -19,4 +21,4 @@ def get_session(key: str):\n-    return redis.Redis(host=HOST, port=6379).get(key)\n+    return redis.Redis(connection_pool=_pool).get(key)"
+  },
+  {
+    "id": "bug-011",
+    "description": "KeyError on an optional config key crashes startup when the key is absent.",
+    "log_snippet": "Traceback (most recent call last):\n  File \"app/config.py\", line 14, in load\n    timeout = cfg['timeout']\nKeyError: 'timeout'",
+    "ground_truth_diff": "diff --git a/app/config.py b/app/config.py\nindex 1111111..2222222 100644\n--- a/app/config.py\n+++ b/app/config.py\n@@ -1,3 +1,3 @@\ndef load(cfg):\n-    timeout = cfg['timeout']\n+    timeout = cfg.get('timeout', 30)\n    return timeout\n"
+  },
+  {
+    "id": "bug-012",
+    "description": "SQL injection / crash from f-string query building; must use parameterized query.",
+    "log_snippet": "app.db - ERROR - near \"O'Brien\": syntax error while executing: SELECT * FROM users WHERE name = 'O'Brien'",
+    "ground_truth_diff": "diff --git a/app/db.py b/app/db.py\nindex 1111111..2222222 100644\n--- a/app/db.py\n+++ b/app/db.py\n@@ -1,3 +1,3 @@\ndef get_user(cur, name):\n-    cur.execute(f\"SELECT * FROM users WHERE name = '{name}'\")\n+    cur.execute(\"SELECT * FROM users WHERE name = ?\", (name,))\n    return cur.fetchone()\n"
+  },
+  {
+    "id": "bug-013",
+    "description": "ZeroDivisionError computing success rate when no requests were recorded.",
+    "log_snippet": "Traceback (most recent call last):\n  File \"app/metrics.py\", line 22, in rate\n    return ok / total\nZeroDivisionError: division by zero",
+    "ground_truth_diff": "diff --git a/app/metrics.py b/app/metrics.py\nindex 1111111..2222222 100644\n--- a/app/metrics.py\n+++ b/app/metrics.py\n@@ -1,3 +1,3 @@\ndef rate(ok, total):\n-    return ok / total\n+    return ok / total if total else 0.0\n    # success ratio\n"
+  },
+  {
+    "id": "bug-014",
+    "description": "Coroutine never awaited: fetch() result is a coroutine, not data, causing AttributeError.",
+    "log_snippet": "RuntimeWarning: coroutine 'fetch' was never awaited\n  File \"app/handler.py\", line 30, in handle\n    data = fetch(url)\nAttributeError: 'coroutine' object has no attribute 'json'",
+    "ground_truth_diff": "diff --git a/app/handler.py b/app/handler.py\nindex 1111111..2222222 100644\n--- a/app/handler.py\n+++ b/app/handler.py\n@@ -1,3 +1,3 @@\nasync def handle(url):\n-    data = fetch(url)\n+    data = await fetch(url)\n    return data.json()\n"
+  },
+  {
+    "id": "bug-015",
+    "description": "Infinite recursion (missing base case) hits Python recursion limit.",
+    "log_snippet": "RecursionError: maximum recursion depth exceeded\n  File \"app/tree.py\", line 9, in walk\n    return walk(node.parent)",
+    "ground_truth_diff": "diff --git a/app/tree.py b/app/tree.py\nindex 1111111..2222222 100644\n--- a/app/tree.py\n+++ b/app/tree.py\n@@ -1,3 +1,3 @@\ndef walk(node):\n-    return walk(node.parent)\n+    return node if node.parent is None else walk(node.parent)\n    # ascend to root\n"
+  },
+  {
+    "id": "bug-016",
+    "description": "TypeError comparing timezone-naive and aware datetimes in token expiry check.",
+    "log_snippet": "Traceback (most recent call last):\n  File \"app/auth.py\", line 41, in is_expired\n    return datetime.now() > token.exp\nTypeError: can't compare offset-naive and offset-aware datetimes",
+    "ground_truth_diff": "diff --git a/app/auth.py b/app/auth.py\nindex 1111111..2222222 100644\n--- a/app/auth.py\n+++ b/app/auth.py\n@@ -1,3 +1,3 @@\ndef is_expired(token):\n-    return datetime.now() > token.exp\n+    return datetime.now(timezone.utc) > token.exp\n    # exp is tz-aware\n"
+  },
+  {
+    "id": "bug-017",
+    "description": "File handle leak: file opened without a context manager exhausts descriptors under load.",
+    "log_snippet": "app.io - ERROR - OSError: [Errno 24] Too many open files\n  File \"app/io.py\", line 12, in read_blob\n    f = open(path)",
+    "ground_truth_diff": "diff --git a/app/io.py b/app/io.py\nindex 1111111..2222222 100644\n--- a/app/io.py\n+++ b/app/io.py\n@@ -1,3 +1,3 @@\ndef read_blob(path):\n-    f = open(path); return f.read()\n+    with open(path) as f: return f.read()\n    # bounded fds\n"
+  },
+  {
+    "id": "bug-018",
+    "description": "Off-by-one in pagination slice drops the last item on each page.",
+    "log_snippet": "app.api - WARNING - page size mismatch: requested 50 got 49 (items 0..49 sliced [0:49])",
+    "ground_truth_diff": "diff --git a/app/api.py b/app/api.py\nindex 1111111..2222222 100644\n--- a/app/api.py\n+++ b/app/api.py\n@@ -1,3 +1,3 @@\ndef page(items, offset, size):\n-    return items[offset:offset+size-1]\n+    return items[offset:offset+size]\n    # inclusive of full page\n"
   }
 ]

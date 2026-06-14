@@ -18,10 +18,10 @@ from __future__ import annotations
 try:
     from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
     PROMETHEUS_AVAILABLE = True
-except Exception:  # noqa: BLE001 - any import failure -> degrade to no-op
+except Exception:  # noqa: BLE001 - any import failure -> degrade to no-op  # pragma: no cover
     PROMETHEUS_AVAILABLE = False
 
-    class _Noop:
+    class _Noop:  # pragma: no cover
         """Mimics Counter/Histogram/Gauge so call sites never branch."""
 
         def labels(self, *a, **k) -> "_Noop":
