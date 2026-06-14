@@ -112,6 +112,14 @@ async def lifespan(app: FastAPI):
         logger.warning("webhook_auth_disabled", profile=settings.profile,
                        detail="AEGIS_WEBHOOK_TOKEN unset; webhooks are unauthenticated.")
 
+    # Data-plane integrity (Batch 4 / audit F2): the Redis approval store must
+    # sign its entries, or a forged blob could be approved into a PR/kubectl run.
+    from aegis_sre.core.approvals import data_plane_security_issues
+    for level, detail in data_plane_security_issues(settings):
+        if level == "error":
+            raise RuntimeError(detail)
+        logger.warning("data_plane_security", detail=detail)
+
     # Best-effort OTel tracing (A1-A2): real spans when the SDK + an OTLP
     # endpoint are configured, no-op otherwise.
     from aegis_sre.telemetry import tracing

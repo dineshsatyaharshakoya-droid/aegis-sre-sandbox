@@ -19,9 +19,11 @@ can't both act on the same incident.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 from collections import OrderedDict
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from aegis_sre.orchestrator.schemas import ActionPlan, CodePatch, Remediation, TelemetryEvent
 from aegis_sre.telemetry.logger import logger
@@ -42,6 +44,62 @@ def _deserialize(blob: str) -> Tuple[Remediation, TelemetryEvent]:
     d = json.loads(blob)
     cls = ActionPlan if d["kind"] == "action_plan" else CodePatch
     return cls(**d["remediation"]), TelemetryEvent(**d["telemetry"])
+
+
+# --- integrity: HMAC-signed approval blobs (Batch 4 / audit F2) --------------
+
+class BlobSigner:
+    """HMAC-SHA256 integrity tag wrapping an approval blob.
+
+    The (Redis) approval store holds pending remediations that approval turns
+    into a PR or a gated kubectl action. An attacker with Redis write access
+    could otherwise forge or tamper an entry and have the API execute it. Signing
+    lets the API reject any blob it did not itself write.
+
+    Wire format: ``v1:<hexdigest>:<payload>``. Disabled (passthrough) when no key
+    is configured — but a *signed* blob arriving at a keyless verifier is still
+    rejected, so downgrading the deployment can't be used to slip a forgery in.
+    """
+
+    PREFIX = "v1"
+
+    def __init__(self, secret: str = ""):
+        self._key = secret.encode() if secret else b""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._key)
+
+    def _sig(self, payload: str) -> str:
+        return hmac.new(self._key, payload.encode(), hashlib.sha256).hexdigest()
+
+    def wrap(self, payload: str) -> str:
+        if not self.enabled:
+            return payload
+        return f"{self.PREFIX}:{self._sig(payload)}:{payload}"
+
+    def unwrap(self, blob: Optional[str]) -> Optional[str]:
+        """Verified payload, or None if absent / unsigned-when-required / tampered."""
+        if blob is None:
+            return None
+        signed = blob.startswith(self.PREFIX + ":")
+        if not self.enabled:
+            if signed:  # can't verify a signed blob without the key -> distrust it
+                logger.warning("approval_blob_unverifiable_no_key")
+                return None
+            return blob
+        if not signed:  # signing is on but this blob isn't signed -> forged/legacy
+            logger.warning("approval_blob_unsigned_rejected")
+            return None
+        try:
+            _ver, sig, payload = blob.split(":", 2)
+        except ValueError:
+            logger.warning("approval_blob_malformed_rejected")
+            return None
+        if not hmac.compare_digest(sig, self._sig(payload)):
+            logger.error("approval_blob_tamper_detected")
+            return None
+        return payload
 
 
 # --- pending stores ----------------------------------------------------------
@@ -125,12 +183,13 @@ class RedisPendingStore:
 
 
 class ApprovalRegistry:
-    def __init__(self, store=None, max_size: int = 1000):
+    def __init__(self, store=None, max_size: int = 1000, signer: Optional[BlobSigner] = None):
         self._store = store if store is not None else InMemoryPendingStore(max_size)
+        self._signer = signer if signer is not None else BlobSigner("")
 
     async def register(self, incident_id: str, patch: Remediation, telemetry: TelemetryEvent) -> None:
         """Hold a generated remediation pending human approval."""
-        await self._store.register(incident_id, _serialize(patch, telemetry))
+        await self._store.register(incident_id, self._signer.wrap(_serialize(patch, telemetry)))
 
     async def pending_count(self) -> int:
         return await self._store.count()
@@ -150,7 +209,7 @@ class ApprovalRegistry:
         Returns `status` in {deployed, executed, rolled_back, blocked,
         already_approved, not_found, error}.
         """
-        approved = await self._store.claim_approved(incident_id)
+        approved = self._signer.unwrap(await self._store.claim_approved(incident_id))
         if approved is not None:
             return {"status": "already_approved", "incident_id": incident_id, "pr_url": approved}
 
@@ -158,7 +217,13 @@ class ApprovalRegistry:
         if blob is None:
             return {"status": "not_found", "incident_id": incident_id}
 
-        remediation, telemetry = _deserialize(blob)
+        payload = self._signer.unwrap(blob)
+        if payload is None:  # forged or tampered entry — refuse and do NOT restore it
+            metrics.actions_executed.labels(type="unknown", result="tampered").inc()
+            logger.error("approval_rejected_integrity", incident_id=incident_id, approver=approver)
+            return {"status": "tampered", "incident_id": incident_id}
+
+        remediation, telemetry = _deserialize(payload)
         logger.info("approval_attributed", incident_id=incident_id, approver=approver,
                     kind=type(remediation).__name__, arm=arm)
         if isinstance(remediation, ActionPlan):
@@ -177,7 +242,7 @@ class ApprovalRegistry:
             logger.error("pull_request_creation_failed", incident_id=incident_id, error=str(e))
             return {"status": "error", "incident_id": incident_id, "error": str(e)}
 
-        await self._store.mark_approved(incident_id, pr_url)
+        await self._store.mark_approved(incident_id, self._signer.wrap(pr_url))
         metrics.patches_deployed.inc()
         metrics.actions_executed.labels(type="code_patch", result="deployed").inc()
         logger.info("patch_approved_pr_opened", incident_id=incident_id, file=patch.file_path, pr_url=pr_url)
@@ -206,7 +271,7 @@ class ApprovalRegistry:
             status, result = "executed", ("live" if mode == "live" else "dry_run")
 
         if status != "blocked":
-            await self._store.mark_approved(incident_id, f"action-plan:{result}")
+            await self._store.mark_approved(incident_id, self._signer.wrap(f"action-plan:{result}"))
         metrics.actions_executed.labels(type="action_plan", result=result).inc()
         audit = {"steps": [s.__dict__ for s in outcome.executed.steps], **outcome.executed.audit}
         logger.info("action_plan_executed", incident_id=incident_id, mode=mode,
@@ -216,10 +281,38 @@ class ApprovalRegistry:
                 "reason": outcome.executed.reason, "audit": audit}
 
 
+def _approval_secret(settings) -> str:
+    """Signing key: dedicated secret if set, else the webhook token (already
+    required on cloud), so a single configured secret is enough to be safe."""
+    return getattr(settings, "approval_signing_secret", "") or getattr(settings, "webhook_token", "")
+
+
+def data_plane_security_issues(settings) -> List[Tuple[str, str]]:
+    """Audit the approval data-plane. Returns (level, detail) where level is
+    'error' (fail closed) or 'warn'. Called at startup."""
+    issues: List[Tuple[str, str]] = []
+    uses_redis = settings.cache_backend == "redis" or settings.is_cloud
+    if not uses_redis:
+        return issues
+    if not _approval_secret(settings):
+        issues.append(("error",
+            "AEGIS_APPROVAL_SECRET (or AEGIS_WEBHOOK_TOKEN) is required for the Redis "
+            "approval store: unsigned entries could be forged to drive a PR/kubectl action."))
+    url = getattr(settings, "redis_url", "") or ""
+    if url.startswith("redis://") and "@" not in url:
+        issues.append(("warn",
+            "Redis approval store has no AUTH credentials and no TLS — use a password "
+            "and rediss:// (TLS) so pending remediations aren't readable/writable on the wire."))
+    elif url.startswith("redis://"):
+        issues.append(("warn", "Redis connection is not using TLS (rediss://)."))
+    return issues
+
+
 def build_approval_registry(settings) -> ApprovalRegistry:
     """Redis-backed shared registry on the cloud tier (worker + API share state);
-    in-memory on-prem."""
+    in-memory on-prem. Blobs are HMAC-signed when a secret is configured."""
+    signer = BlobSigner(_approval_secret(settings))
     if settings.cache_backend == "redis" or settings.is_cloud:
-        logger.info("approval_registry_backend", backend="redis")
-        return ApprovalRegistry(store=RedisPendingStore(settings.redis_url))
-    return ApprovalRegistry(store=InMemoryPendingStore())
+        logger.info("approval_registry_backend", backend="redis", signed=signer.enabled)
+        return ApprovalRegistry(store=RedisPendingStore(settings.redis_url), signer=signer)
+    return ApprovalRegistry(store=InMemoryPendingStore(), signer=signer)

@@ -104,6 +104,11 @@ class Settings:
     # Sentry client secret for HMAC verification of /webhook/sentry. Empty => no
     # signature check (dev); set in production.
     sentry_secret: str = field(default_factory=lambda: _env("AEGIS_SENTRY_SECRET", ""))
+    # HMAC key for signing approval blobs in the (Redis) approval store (Batch 4 /
+    # audit F2). Stops an attacker with Redis write access from forging or
+    # tampering a pending remediation that approval would turn into a PR / kubectl
+    # action. Empty => fall back to webhook_token; REQUIRED for the Redis store.
+    approval_signing_secret: str = field(default_factory=lambda: _env("AEGIS_APPROVAL_SECRET", ""))
     # Per-client requests/minute on the webhooks. 0 => disabled.
     rate_limit_rpm: int = field(default_factory=lambda: _env_int("AEGIS_RATE_LIMIT_RPM", 0))
     # --- Abuse / input-firewall hardening (red-team batch 1) ---
