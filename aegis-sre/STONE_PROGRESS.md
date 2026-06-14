@@ -9,7 +9,7 @@ each increment relaxes the two market-gating limiters and moves us toward the
 - **#1 Trigger modality** — crash/stack-trace → must become metric/alert/stream.
 - **#2 Remediation modality** — code patch/PR → must become live actions.
 
-_Last updated: through cycle D2 (+ coverage pass). Tests: 131 passing. Coverage: 78% overall; decision/business-logic core 90–100% (schemas, validator, policy, executor, approvals, adapters). Gaps are external-I/O boundaries (LLM, RAG, Redis/Postgres live branches, GitHub API, async glue) validated via live smoke runs. Latest fix-rate: 0.50 (2-case sample)._
+_Last updated: through cycle D4. Tests: 138 passing. Coverage: ~78% overall; decision/business-logic core 90–100% (schemas, validator, policy, executor, verifier, approvals, adapters). Gaps are external-I/O boundaries (LLM, RAG, Redis/Postgres live branches, GitHub API, async glue) validated via live smoke runs. Latest fix-rate: 0.50 (2-case sample)._
 
 ---
 
@@ -20,7 +20,7 @@ _Last updated: through cycle D2 (+ coverage pass). Tests: 131 passing. Coverage:
 | 0 — foundation | see/measure/operate the existing product | 🟩🟩🟩⬜ ~80% | — |
 | 1 — Signal/Remediation | model non-crash triggers + non-code fixes | ✅ done | #1 & #2 (model) |
 | 2 — MCP eyes | alert-triggered + live-context diagnosis | 🟩🟩🟩⬜ ~70% | **#1 (live)** |
-| 3 — MCP hands (sellable) | gated live execution | 🟩🟩⬜⬜ ~30% | **#2 (live) — policy + gated executor** |
+| 3 — MCP hands (sellable) | gated live execution | 🟩🟩🟩⬜ ~45% | **#2 (live) — policy + executor + verify** |
 | 4 — productionize | multi-tenant, secrets, CI gate | ⬜ 0% | — |
 | 5 — HPC/GPU wedge | premium vertical | ⬜ 0% | — |
 
@@ -30,7 +30,8 @@ _Last updated: through cycle D2 (+ coverage pass). Tests: 131 passing. Coverage:
 
 | Cycle | What | Bigger-picture contribution | Commit |
 |-------|------|-----------------------------|--------|
-| D2 | gated `ActionExecutor` (runs act-tools only when policy permits; refuses non-act/unknown/handler-less; stops on failure) | **Limiter #2 executes (safely)**: the only place live mutation happens, fully gated by D1. | `pending` |
+| D4 | `verifier.py` — re-read the metric to confirm recovery (per-series, fail-closed) + debug-pass fix of a GTE worst-case-aggregation bug | **Makes actions non-fire-and-forget**: proof a remediation worked, the gate before rollback (D5). | `pending` |
+| D2 | gated `ActionExecutor` (runs act-tools only when policy permits; refuses non-act/unknown/handler-less; stops on failure) | **Limiter #2 executes (safely)**: the only place live mutation happens, fully gated by D1. | `34552bd` |
 | D1 | `policy.py` action gate (dry-run default, blast caps, allow/deny, audit) + debug-pass fix of a live-on-unarmed safety hole | **Starts limiter #2 live (safely)**: the gate the sellable product rests on; gates `registry` act-tools by risk + blast radius. | `6b47e30` |
 | C4 | Alertmanager webhook → `Signal(metric_alert)` → swarm | **Relaxes limiter #1 live**: a metric alert (not just a crash) now triggers the repair loop. Completes Stone 2's trigger half. | `81d370c` |
 | C1 | Risk-classed tool registry (`read`/`notify`/`act`) | Keystone for the sellable Stone 3: its policy engine gates `act` tools by risk. Retrofits ad-hoc tools. | `9f08744` |
@@ -59,9 +60,8 @@ _Last updated: through cycle D2 (+ coverage pass). Tests: 131 passing. Coverage:
 
 ## Next up
 
-**Stone 3 / D4 — post-action verification.** The executor (D2) now runs gated
-actions; the SCALE_PLAN is explicit that verification + rollback are what keep
-autonomy safe. D4: after an action, re-read the triggering metric (via the
-Prometheus read tool) to confirm the signal cleared; D5: auto-rollback/compensate
-on regression. (D3 — wiring the executor into the approval/deploy path — folds in
-once verification exists, so a live action is never fire-and-forget.)
+**Stone 3 / D5 — rollback on regression.** Policy (D1), executor (D2), and
+verification (D4) are in. D5: if `verify()` says the signal did NOT clear (or
+regressed), run the plan's compensating/rollback steps automatically. Then D3
+threads it all together (approve → execute → verify → rollback) into the deploy
+path so a live action is never fire-and-forget — completing the sellable loop.
