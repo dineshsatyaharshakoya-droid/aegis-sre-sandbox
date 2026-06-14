@@ -93,9 +93,12 @@ class RAGEngine:
                     "AEGIS_CHROMA_PATH",
                     os.path.join(os.path.expanduser("~"), ".aegis", "chroma"))
                 os.makedirs(chroma_path, exist_ok=True)
+                self._chroma_path = chroma_path
+                self._manifest_path = os.path.join(chroma_path, "ingest_manifest.txt")
                 db = chromadb.PersistentClient(path=chroma_path)
-                
+
                 code_collection = db.get_or_create_collection("aegis_codebase")
+                self._code_collection = code_collection
                 self.code_store = ChromaVectorStore(chroma_collection=code_collection)
                 
                 skills_collection = db.get_or_create_collection("aegis_skills")
@@ -108,31 +111,63 @@ class RAGEngine:
         else:
             logger.warning("llama_index_not_installed", module="rag_engine")
             
+    def _workspace_fingerprint(self) -> str:
+        """A cheap content fingerprint of all .py files (path+size+mtime). Changes
+        whenever any file is added/removed/edited (A7)."""
+        import hashlib
+        parts = []
+        for root, _, files in os.walk(self.workspace_path):
+            if "venv" in root or ".chroma" in root or "__pycache__" in root:
+                continue
+            for file in sorted(files):
+                if file.endswith(".py"):
+                    fp = os.path.join(root, file)
+                    try:
+                        st = os.stat(fp)
+                        parts.append(f"{os.path.relpath(fp, self.workspace_path)}:{st.st_size}:{int(st.st_mtime)}")
+                    except OSError:
+                        continue
+        return hashlib.sha256("\n".join(sorted(parts)).encode()).hexdigest()
+
     def ingest_workspace(self):
-        """Crawls the local workspace and builds the AST RAG index."""
+        """Build the AST RAG index. Incremental (A7): if the workspace fingerprint
+        is unchanged and the collection is already populated, reuse the persisted
+        index instead of re-embedding every file on each startup."""
         if not LLAMA_INDEX_AVAILABLE or not self.code_store:
             return
-            
+
+        fingerprint = self._workspace_fingerprint()
+        try:
+            already_indexed = self._code_collection.count() > 0
+            cached = os.path.exists(self._manifest_path) and \
+                open(self._manifest_path).read().strip() == fingerprint
+            if already_indexed and cached:
+                self.code_index = VectorStoreIndex.from_vector_store(self.code_store)
+                logger.info("workspace_ingest_skipped_unchanged", fingerprint=fingerprint[:12])
+                return
+        except Exception as e:  # noqa: BLE001 - cache check is best-effort
+            logger.warning("ingest_cache_check_failed", error=str(e))
+
         logger.info("starting_workspace_ingestion", path=self.workspace_path)
         documents = []
-        
+
         # Crawl python files
         for root, _, files in os.walk(self.workspace_path):
-            if "venv" in root or ".chroma_db" in root or "__pycache__" in root:
+            if "venv" in root or ".chroma" in root or "__pycache__" in root:
                 continue
-                
+
             for file in files:
                 if file.endswith(".py"):
                     full_path = os.path.join(root, file)
                     try:
                         with open(full_path, "r", encoding="utf-8") as f:
                             content = f.read()
-                        
+
                         docs = self.splitter.split_file(full_path, content)
                         documents.extend(docs)
                     except Exception as e:
                         logger.error("file_ingest_error", file=full_path, error=str(e))
-                        
+
         if documents:
             try:
                 from llama_index.core import StorageContext
@@ -143,6 +178,11 @@ class RAGEngine:
                     show_progress=False
                 )
                 logger.info("workspace_ingestion_complete", total_chunks=len(documents))
+                try:
+                    with open(self._manifest_path, "w") as m:
+                        m.write(fingerprint)  # record so the next startup can skip (A7)
+                except Exception:  # noqa: BLE001
+                    pass
             except Exception as e:
                 logger.warning("workspace_ingestion_failed_ollama_offline", error=str(e))
                 self.code_index = None
