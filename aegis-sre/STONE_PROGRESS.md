@@ -9,7 +9,7 @@ each increment relaxes the two market-gating limiters and moves us toward the
 - **#1 Trigger modality** — crash/stack-trace → must become metric/alert/stream.
 - **#2 Remediation modality** — code patch/PR → must become live actions.
 
-_Last updated: through cycle D6. Tests: 191 passing. Coverage: ~81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
+_Last updated: through cycle D7 — **Stone 3 complete (sellable product reached)**. Tests: 195 passing. Coverage: ~81% overall; decision/business-logic core 85–100%. Remaining gaps are deliberately-out-of-scope live I/O (rag_engine chromadb, api_receiver lifespan, sandbox E2B). Eval corpus: 18 labeled cases. Latest fix-rate: 0.50 (2-case sample; full 18-case run pending)._
 
 ---
 
@@ -20,7 +20,7 @@ _Last updated: through cycle D6. Tests: 191 passing. Coverage: ~81% overall; dec
 | 0 — foundation | see/measure/operate the existing product | 🟩🟩🟩⬜ ~80% | — |
 | 1 — Signal/Remediation | model non-crash triggers + non-code fixes | ✅ done | #1 & #2 (model) |
 | 2 — MCP eyes | alert-triggered + live-context diagnosis | 🟩🟩🟩⬜ ~70% | **#1 (live)** |
-| 3 — MCP hands (sellable) | gated live execution | 🟩🟩🟩🟩 ~85% | **#2 (live) — full loop wired + audited** |
+| 3 — MCP hands (sellable) | gated live execution | ✅ **done** | **#2 (live) — full loop, e2e signed off** |
 | 4 — productionize | multi-tenant, secrets, CI gate | ⬜ 0% | — |
 | 5 — HPC/GPU wedge | premium vertical | ⬜ 0% | — |
 
@@ -30,7 +30,8 @@ _Last updated: through cycle D6. Tests: 191 passing. Coverage: ~81% overall; dec
 
 | Cycle | What | Bigger-picture contribution | Commit |
 |-------|------|-----------------------------|--------|
-| D3+D6 | wire the runner into approval (`approve(ActionPlan)` → execute→verify→rollback) + audit records + `aegis_actions_executed_total{type,result}` | **Limiter #2 fully live & observable**: approving an action drives the gated loop; every outcome audited + counted. | `pending` |
+| D7 | staging end-to-end sign-off: alert→approve→execute→verify→rollback-on-forced-failure + dry-run-safe + idempotent, all real components | **Sellable product exit criterion met** — Stone 3 complete. | `pending` |
+| D3+D6 | wire the runner into approval (`approve(ActionPlan)` → execute→verify→rollback) + audit records + `aegis_actions_executed_total{type,result}` | **Limiter #2 fully live & observable**: approving an action drives the gated loop; every outcome audited + counted. | `c699eff` |
 | D5 | execute→verify→rollback spine (`remediation_runner.py` + `ActionPlan.rollback_steps` + executor rollback) | **Completes the safe-action loop**: failed verification auto-runs compensating steps; only proven recoveries stand. | `df991d4` |
 | D4 | `verifier.py` — re-read the metric to confirm recovery (per-series, fail-closed) + debug-pass fix of a GTE worst-case-aggregation bug | **Makes actions non-fire-and-forget**: proof a remediation worked, the gate before rollback (D5). | `caf7a0f` |
 | D2 | gated `ActionExecutor` (runs act-tools only when policy permits; refuses non-act/unknown/handler-less; stops on failure) | **Limiter #2 executes (safely)**: the only place live mutation happens, fully gated by D1. | `34552bd` |
@@ -62,9 +63,10 @@ _Last updated: through cycle D6. Tests: 191 passing. Coverage: ~81% overall; dec
 
 ## Next up
 
-**Stone 3 / D7 — staging end-to-end (exit criterion).** All the parts are built
-and unit-tested; D7 proves them together: alert → diagnose → approve →
-execute → verify → rollback-on-forced-failure, with full audit. A scripted
-integration test (synthetic ActionPlan + registered mock act-tools + fake
-verifier toggled to fail) that exercises the whole path is the sellable-product
-sign-off. After that, Stone 3 is done and Stone 4 (productionize) begins.
+**Stone 4 — productionize live actions.** Stone 3 (the sellable product) is done.
+Stone 4 makes it safe to point at a real customer prod: idempotent action
+execution + concurrent-remediation dedup, per-integration credential scoping /
+secrets management, multi-tenant isolation + per-tenant quotas, a CI gate running
+the eval + integration suites, Postgres migrations (Alembic), and a dead-letter
+queue for poison signals. Also worth folding in: the deferred Stone-2 items (C3
+logs tool, C6 per-tool metrics) and a full 18-case eval fix-rate run.
