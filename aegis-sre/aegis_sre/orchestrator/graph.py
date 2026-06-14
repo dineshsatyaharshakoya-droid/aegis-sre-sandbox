@@ -7,9 +7,11 @@ from pydantic import ValidationError
 
 from aegis_sre.config import get_settings
 from aegis_sre.orchestrator.llm import chat_json
-from aegis_sre.orchestrator.schemas import TelemetryEvent, PatchProposal, SecurityReview
+from aegis_sre.orchestrator.schemas import (
+    TelemetryEvent, PatchProposal, SecurityReview, Remediation, CodePatch,
+)
 from aegis_sre.orchestrator.vcs_provider import get_vcs_provider
-from aegis_sre.orchestrator.sandbox_engine import get_sandbox_engine
+from aegis_sre.orchestrator.validator import Validator
 from aegis_sre.orchestrator.rag_engine import RAGEngine
 from aegis_sre.orchestrator.safety import safety_policy
 from aegis_sre.telemetry.logger import logger
@@ -26,7 +28,9 @@ def get_rag_engine() -> RAGEngine:
 class GraphState(TypedDict):
     telemetry: TelemetryEvent
     code_context: str | None
-    current_patch: PatchProposal | None
+    # Holds any Remediation (CodePatch today, ActionPlan later). Kept named
+    # `current_patch` for back-compat with the API/approval/WS consumers.
+    current_patch: Remediation | None
     sandbox_status: str
     review: SecurityReview | None
     iteration_count: int
@@ -196,35 +200,39 @@ async def executor_node(state: GraphState) -> GraphState:
     }
 
 async def sandbox_node(state: GraphState) -> GraphState:
-    logger.info("compiling_and_testing", node="sandbox")
-    patch = state.get("current_patch")
-    if not patch:
+    logger.info("validating_remediation", node="sandbox")
+    remediation = state.get("current_patch")
+    if not remediation:
         return {"sandbox_status": "failed"}
 
-    # Fetch the *real* current source so the patch is applied in context and the
-    # full patched file is what gets validated — not the replacement chunk alone.
+    # Code patches need the *real* current source so the patch is applied in
+    # context and the full patched file is validated — not the chunk alone.
+    # Other remediations (ActionPlan) have no source to fetch; the Validator
+    # dry-runs them instead.
     original_source = None
-    try:
-        vcs = get_vcs_provider()
-        original_source = await vcs.fetch_file_content(patch.file_path)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("sandbox_source_fetch_failed", node="sandbox", file_path=patch.file_path, error=str(e))
+    if isinstance(remediation, CodePatch):
+        try:
+            vcs = get_vcs_provider()
+            original_source = await vcs.fetch_file_content(remediation.file_path)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("sandbox_source_fetch_failed", node="sandbox",
+                           file_path=remediation.file_path, error=str(e))
 
     # Behavioral reproduction is OPTIONAL and must come from a trusted operator
     # source (env), never from the attacker-influenceable crash telemetry.
     repro_command = os.environ.get("AEGIS_REPRO_COMMAND") or None
 
-    engine = get_sandbox_engine()
-    success, output = await engine.compile_and_test(
-        patch, original_source=original_source, repro_command=repro_command
+    # Type-agnostic gate: CodePatch -> compile/repro, ActionPlan -> dry-run.
+    result = await Validator().validate(
+        remediation, original_source=original_source, repro_command=repro_command
     )
 
-    if success:
+    if result.success:
         metrics.sandbox_validations.labels(result="success").inc()
-        logger.info("sandbox_validation_passed", node="sandbox", output=output)
+        logger.info("sandbox_validation_passed", node="sandbox", kind=result.kind, output=result.output)
         return {"sandbox_status": "success"}
     metrics.sandbox_validations.labels(result="failed").inc()
-    logger.error("sandbox_validation_failed", node="sandbox", output=output)
+    logger.error("sandbox_validation_failed", node="sandbox", kind=result.kind, output=result.output)
     return {"sandbox_status": "failed"}
 
 async def reviewer_node(state: GraphState) -> GraphState:
